@@ -1,0 +1,45 @@
+# MLPerf Experiments .gitignore
+
+# Cloned inference repositories (large, can be re-cloned)
+v*/inference/
+
+# Downloaded data (large, can be re-downloaded)
+v*/data/
+
+# Downloaded models (large, can be re-downloaded)
+v*/models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Results (large benchmark outputs)
+v*/results/
