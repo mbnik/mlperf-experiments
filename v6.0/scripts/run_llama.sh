@@ -37,6 +37,7 @@ DATA_TYPE="synthetic"
 QUANTIZATION="none"
 MLPERF_MODE=false
 MAX_NEW_TOKENS=128
+DOWNLOAD_METHOD="hf"
 EXTRA_ARGS=()
 
 print_usage() {
@@ -63,6 +64,7 @@ print_usage() {
     echo "Data Options:"
     echo "  --data=TYPE     Data type: synthetic, real (default: synthetic)"
     echo "  --samples=N     Number of samples (default: 10)"
+    echo "  --download=M    Download method: hf (default), wget"
     echo ""
     echo "MLPerf Compliance:"
     echo "  --mlperf        Use official MLPerf settings (max_new_tokens=1024, real data)"
@@ -329,15 +331,60 @@ PYTHON_EOF
     echo ""
 }
 
-download_cnn_dailymail() {
+download_cnn_dailymail_wget() {
+    local data_dir="${PROJECT_DIR}/data/cnn-dailymail"
+    local parquet_dir="${data_dir}/parquet"
+    
+    echo -e "${CYAN}► Downloading CNN-DailyMail via wget...${NC}"
+    mkdir -p "$parquet_dir"
+    
+    # CNN-DailyMail is a public dataset (no auth needed)
+    local base_url="https://huggingface.co/datasets/abisee/cnn_dailymail/resolve/main/3.0.0"
+    
+    # Download test parquet
+    echo "  Downloading test-00000-of-00001.parquet..."
+    wget -q --show-progress -O "${parquet_dir}/test-00000-of-00001.parquet" \
+        "${base_url}/test-00000-of-00001.parquet"
+    
+    # Download validation parquet
+    echo "  Downloading validation-00000-of-00001.parquet..."
+    wget -q --show-progress -O "${parquet_dir}/validation-00000-of-00001.parquet" \
+        "${base_url}/validation-00000-of-00001.parquet"
+    
+    # Extract to JSON using pyarrow
+    echo "  Extracting data from parquet files..."
+    python3 << PYTHON_EOF
+import pyarrow.parquet as pq
+import json
+import os
+
+data_dir = "$data_dir"
+parquet_dir = "$parquet_dir"
+
+# Process test set
+test_table = pq.read_table(os.path.join(parquet_dir, "test-00000-of-00001.parquet"))
+test_data = [{"article": row["article"], "highlights": row["highlights"]} 
+             for row in test_table.to_pylist()]
+with open(os.path.join(data_dir, "test.json"), "w") as f:
+    json.dump(test_data, f)
+print(f"  ✓ Saved {len(test_data)} test articles")
+
+# Process validation set
+val_table = pq.read_table(os.path.join(parquet_dir, "validation-00000-of-00001.parquet"))
+val_data = [{"article": row["article"], "highlights": row["highlights"]} 
+            for row in val_table.to_pylist()]
+with open(os.path.join(data_dir, "validation.json"), "w") as f:
+    json.dump(val_data, f)
+print(f"  ✓ Saved {len(val_data)} validation articles")
+PYTHON_EOF
+    
+    echo -e "${GREEN}✓ CNN-DailyMail downloaded via wget${NC}"
+}
+
+download_cnn_dailymail_hf() {
     local data_dir="${PROJECT_DIR}/data/cnn-dailymail"
     
-    if [[ -f "$data_dir/test.json" ]]; then
-        echo -e "${GREEN}✓ CNN-DailyMail data found${NC}"
-        return 0
-    fi
-    
-    echo -e "${CYAN}Downloading CNN-DailyMail dataset...${NC}"
+    echo -e "${CYAN}Downloading CNN-DailyMail via HuggingFace...${NC}"
     mkdir -p "$data_dir"
     
     python3 << PYTHON_EOF
@@ -355,9 +402,151 @@ test_data = [{"article": item["article"], "highlights": item["highlights"]}
 with open(os.path.join(data_dir, "test.json"), "w") as f:
     json.dump(test_data, f)
 print(f"✓ Saved {len(test_data)} test articles")
+
+# Save validation set
+val_data = [{"article": item["article"], "highlights": item["highlights"]} 
+            for item in dataset["validation"]]
+with open(os.path.join(data_dir, "validation.json"), "w") as f:
+    json.dump(val_data, f)
+print(f"✓ Saved {len(val_data)} validation articles")
 PYTHON_EOF
     
     echo -e "${GREEN}✓ CNN-DailyMail ready${NC}"
+}
+
+download_cnn_dailymail() {
+    local data_dir="${PROJECT_DIR}/data/cnn-dailymail"
+    
+    if [[ -f "$data_dir/test.json" ]]; then
+        echo -e "${GREEN}✓ CNN-DailyMail data found${NC}"
+        return 0
+    fi
+    
+    if [[ "$DOWNLOAD_METHOD" == "wget" ]]; then
+        download_cnn_dailymail_wget
+    else
+        download_cnn_dailymail_hf
+    fi
+}
+
+download_model_wget() {
+    local model_id="$1"
+    local model_dir="${PROJECT_DIR}/models/llama/${MODEL}"
+    
+    # Check if model already downloaded
+    if [[ -f "$model_dir/config.json" ]]; then
+        echo -e "${GREEN}✓ Model files found at $model_dir${NC}"
+        MODEL_PATH="$model_dir"
+        return 0
+    fi
+    
+    echo -e "${CYAN}► Downloading model via wget...${NC}"
+    echo "  Model: $model_id"
+    echo "  Target: $model_dir"
+    echo ""
+    
+    # Prompt for HuggingFace token
+    local url="https://huggingface.co/${model_id}"
+    local url_len=${#url}
+    local padding=$((58 - url_len))
+    local spaces=$(printf '%*s' "$padding" '')
+    
+    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  HuggingFace Token Required for Model Download             ║${NC}"
+    echo -e "${YELLOW}╠════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║  Llama models require authentication. Get your token at:   ║${NC}"
+    echo -e "${YELLOW}║  https://huggingface.co/settings/tokens                    ║${NC}"
+    echo -e "${YELLOW}║                                                            ║${NC}"
+    echo -e "${YELLOW}║  You must also accept the license agreement at:            ║${NC}"
+    echo -e "${YELLOW}║  ${url}${spaces}║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -n "Enter your HuggingFace token (hf_...): "
+    read -r -s HF_TOKEN
+    echo ""
+    
+    if [[ -z "$HF_TOKEN" ]]; then
+        echo -e "${RED}Error: No token provided${NC}"
+        exit 1
+    fi
+    
+    mkdir -p "$model_dir"
+    
+    local base_url="https://huggingface.co/${model_id}/resolve/main"
+    
+    # Get the list of files from the model repo
+    echo "  Fetching model file list..."
+    
+    # Download model index to determine shard count
+    wget -q --header="Authorization: Bearer $HF_TOKEN" \
+        -O "$model_dir/model.safetensors.index.json" \
+        "${base_url}/model.safetensors.index.json" 2>/dev/null || true
+    
+    # Parse shard count from index file
+    local shard_count=0
+    if [[ -f "$model_dir/model.safetensors.index.json" ]]; then
+        shard_count=$(python3 -c "
+import json
+with open('$model_dir/model.safetensors.index.json') as f:
+    data = json.load(f)
+    files = set(data.get('weight_map', {}).values())
+    print(len(files))
+" 2>/dev/null || echo "0")
+    fi
+    
+    if [[ "$shard_count" -eq 0 ]]; then
+        echo -e "${RED}Error: Could not determine model file count. Check your token and model access.${NC}"
+        rm -rf "$model_dir"
+        exit 1
+    fi
+    
+    echo "  Model has $shard_count weight shards"
+    echo ""
+    
+    # Download config files
+    local config_files=(
+        "config.json"
+        "generation_config.json"
+        "tokenizer.json"
+        "tokenizer_config.json"
+        "special_tokens_map.json"
+    )
+    
+    echo "  Downloading configuration files..."
+    for file in "${config_files[@]}"; do
+        echo -n "    $file... "
+        if wget -q --header="Authorization: Bearer $HF_TOKEN" \
+            -O "$model_dir/$file" \
+            "${base_url}/$file" 2>/dev/null; then
+            echo "✓"
+        else
+            echo "skipped"
+        fi
+    done
+    
+    # Download model weight shards
+    echo ""
+    echo "  Downloading model weights (~${MODEL_SIZE_GB}GB total)..."
+    local padded_total=$(printf "%05d" $shard_count)
+    
+    for ((i=1; i<=shard_count; i++)); do
+        local padded_i=$(printf "%05d" $i)
+        local shard_file="model-${padded_i}-of-${padded_total}.safetensors"
+        echo "    Downloading shard $i/$shard_count: $shard_file"
+        
+        if ! wget -q --show-progress --header="Authorization: Bearer $HF_TOKEN" \
+            -O "$model_dir/$shard_file" \
+            "${base_url}/$shard_file"; then
+            echo -e "${RED}Error: Failed to download $shard_file${NC}"
+            echo "  Check your token and ensure you have access to $model_id"
+            rm -rf "$model_dir"
+            exit 1
+        fi
+    done
+    
+    echo ""
+    echo -e "${GREEN}✓ Model downloaded to $model_dir${NC}"
+    MODEL_PATH="$model_dir"
 }
 
 # Parse arguments - first arg might be model name
@@ -413,6 +602,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --mlperf)
             MLPERF_MODE=true
+            shift
+            ;;
+        --download=*)
+            DOWNLOAD_METHOD="${1#*=}"
             shift
             ;;
         *)
@@ -473,7 +666,7 @@ if [[ "$MLPERF_MODE" == "true" ]]; then
     if [[ "$DATA_TYPE" == "synthetic" ]]; then
         echo ""
         echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${YELLOW}║  ⚠️  SYNTHETIC DATA WITH MLPerf MODE                        ║${NC}"
+        echo -e "${YELLOW}║  ⚠️  SYNTHETIC DATA WITH MLPerf MODE                       ║${NC}"
         echo -e "${YELLOW}╠════════════════════════════════════════════════════════════╣${NC}"
         echo -e "${YELLOW}║  Results are NOT comparable to official MLPerf benchmarks  ║${NC}"
         echo -e "${YELLOW}║  For official comparison, use: --mlperf --data=real        ║${NC}"
@@ -484,32 +677,59 @@ else
 fi
 echo ""
 
-# Check HuggingFace token
-check_hf_token
+# Check HuggingFace token (only if using hf download method)
+if [[ "$DOWNLOAD_METHOD" != "wget" ]]; then
+    check_hf_token
+    check_model_access "$HF_MODEL"
+fi
 
-# Check model access before attempting download
-check_model_access "$HF_MODEL"
+# Download model via wget if requested
+MODEL_PATH="$HF_MODEL"
+if [[ "$DOWNLOAD_METHOD" == "wget" ]]; then
+    download_model_wget "$HF_MODEL"
+fi
 
 # Memory warning
 if [[ "$GPU_AVAILABLE" -eq 0 ]] && [[ "$DEVICE" == "cuda" ]]; then
     if [[ "$GPU_MEM" -lt $((REQUIRED_MEM * 1024)) ]]; then
-        echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${YELLOW}║  WARNING: GPU memory may be insufficient                   ║${NC}"
-        echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${YELLOW}+------------------------------------------------------------+${NC}"
+        echo -e "${YELLOW}|  WARNING: GPU memory may be insufficient                   |${NC}"
+        echo -e "${YELLOW}+------------------------------------------------------------+${NC}"
         echo ""
         echo -e "  GPU Memory:     ${GPU_MEM}MB"
         echo -e "  Required:       ~${REQUIRED_MEM}GB (${REQUIRED_MEM}000MB)"
         echo ""
         echo "Options:"
-        echo "  1. Use --offload for CPU memory offloading"
-        echo "  2. Use --4bit for 4-bit quantization"
-        echo "  3. Use --offload --4bit for both"
+        echo "  1. Use --offload (CPU memory offloading)"
+        echo "  2. Use --4bit (4-bit quantization)"
+        echo "  3. Use --offload + --4bit (both)"
+        echo "  4. Continue anyway"
+        echo "  5. Stop"
         echo ""
-        read -p "Continue anyway? [y/N] " -n 1 -r
+        read -p "Select option [1-5]: " -n 1 -r
         echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
+        case $REPLY in
+            1)
+                echo -e "${GREEN}> Enabling --offload${NC}"
+                USE_OFFLOAD=true
+                ;;
+            2)
+                echo -e "${GREEN}> Enabling --4bit${NC}"
+                QUANTIZATION="4bit"
+                ;;
+            3)
+                echo -e "${YELLOW}> Cannot use --offload + --4bit together (bitsandbytes limitation)${NC}"
+                echo "  Please choose option 1 or 2 instead."
+                exit 1
+                ;;
+            4)
+                echo -e "${YELLOW}> Continuing without changes (may fail with OOM)${NC}"
+                ;;
+            5|*)
+                echo "Exiting."
+                exit 0
+                ;;
+        esac
     fi
 fi
 
@@ -526,7 +746,7 @@ mkdir -p "$RESULTS_DIR"
 # Check for incompatible combination: quantization + offload
 if [[ "$USE_OFFLOAD" == "true" && "$QUANTIZATION" != "none" ]]; then
     echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║  ⚠️  INCOMPATIBLE OPTIONS: --${QUANTIZATION} + --offload            ║${NC}"
+    echo -e "${RED}║  ⚠️  INCOMPATIBLE OPTIONS: --${QUANTIZATION} + --offload   ║${NC}"
     echo -e "${RED}╠════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${RED}║  bitsandbytes quantization does NOT support CPU offloading ║${NC}"
     echo -e "${RED}║                                                            ║${NC}"
@@ -535,8 +755,8 @@ if [[ "$USE_OFFLOAD" == "true" && "$QUANTIZATION" != "none" ]]; then
     echo -e "${RED}║    --offload  : FP16 with CPU offloading (slower)          ║${NC}"
     echo -e "${RED}║                                                            ║${NC}"
     echo -e "${RED}║  Examples:                                                 ║${NC}"
-    echo -e "${RED}║    $0 --4bit --mlperf                          ║${NC}"
-    echo -e "${RED}║    $0 --offload --mlperf                       ║${NC}"
+    echo -e "${RED}║    $0 --4bit --mlperf                                      ║${NC}"
+    echo -e "${RED}║    $0 --offload --mlperf                                   ║${NC}"
     echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     exit 1
@@ -549,7 +769,7 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 CMD="python3 ${SCRIPT_DIR}/run_llama_benchmark.py"
-CMD="$CMD --model-name $HF_MODEL"
+CMD="$CMD --model-name $MODEL_PATH"
 CMD="$CMD --device $DEVICE"
 CMD="$CMD --quantization $QUANTIZATION"
 CMD="$CMD --data-type $DATA_TYPE"
@@ -572,7 +792,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     if [ $EXIT_CODE -eq 1 ] && [ "$USE_OFFLOAD" = false ] && [ "$DEVICE" = "cuda" ]; then
         echo ""
         echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║  ⚠️  GPU OUT OF MEMORY ERROR                                ║${NC}"
+        echo -e "${RED}║  ⚠️  GPU OUT OF MEMORY ERROR                               ║${NC}"
         echo -e "${RED}╠════════════════════════════════════════════════════════════╣${NC}"
         echo -e "${RED}║  Llama models require significant VRAM:                    ║${NC}"
         echo -e "${RED}║    - Llama 3.1 8B: ~16GB    - Llama 2 7B: ~14GB            ║${NC}"
@@ -580,10 +800,10 @@ if [ $EXIT_CODE -ne 0 ]; then
         echo -e "${RED}║                                                            ║${NC}"
         echo -e "${RED}║  Solutions:                                                ║${NC}"
         echo -e "${RED}║  1. Use --offload to enable CPU offloading                 ║${NC}"
-        echo -e "${RED}║     Example: $0 --offload --mlperf             ║${NC}"
+        echo -e "${RED}║     Example: $0 --offload --mlperf                         ║${NC}"
         echo -e "${RED}║                                                            ║${NC}"
         echo -e "${RED}║  2. Use --quantization=4bit (requires less VRAM)           ║${NC}"
-        echo -e "${RED}║     Example: $0 --quantization=4bit            ║${NC}"
+        echo -e "${RED}║     Example: $0 --quantization=4bit                        ║${NC}"
         echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
         echo ""
     fi

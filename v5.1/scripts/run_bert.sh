@@ -36,6 +36,7 @@ MAX_EXAMPLES=100
 DATA_TYPE="synthetic"
 BATCH_SIZE=8
 MLPERF_MODE=false
+DOWNLOAD_METHOD="curl"
 EXTRA_ARGS=()
 
 # Help message
@@ -53,6 +54,7 @@ show_help() {
     echo "  --samples=N        Number of samples (default: 100)"
     echo "  --data=TYPE        Data type: synthetic, real (default: synthetic)"
     echo "  --batch=N          Batch size (default: 8)"
+    echo "  --download=M       Download method: curl (default), wget"
     echo "  --mlperf           Use official MLPerf settings (auto-downloads real data)"
     echo "  -h, --help         Show this help message"
     echo ""
@@ -106,6 +108,10 @@ while [[ $# -gt 0 ]]; do
             MLPERF_MODE=true
             shift
             ;;
+        --download=*)
+            DOWNLOAD_METHOD="${1#*=}"
+            shift
+            ;;
         -h|--help)
             show_help
             ;;
@@ -155,8 +161,13 @@ if [[ "$DATA_TYPE" == "real" ]]; then
     if [ ! -f "${MLPERF_ROOT}/data/squad/dev-v1.1.json" ]; then
         echo -e "${YELLOW}► SQuAD data not found, downloading...${NC}"
         mkdir -p "${MLPERF_ROOT}/data/squad"
-        curl -L -o "${MLPERF_ROOT}/data/squad/dev-v1.1.json" \
-            "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json"
+        SQUAD_URL="https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json"
+        
+        if [[ "$DOWNLOAD_METHOD" == "wget" ]]; then
+            wget -q --show-progress -O "${MLPERF_ROOT}/data/squad/dev-v1.1.json" "$SQUAD_URL"
+        else
+            curl -L -o "${MLPERF_ROOT}/data/squad/dev-v1.1.json" "$SQUAD_URL"
+        fi
         echo -e "${GREEN}✓ Downloaded SQuAD v1.1${NC}"
         echo ""
     fi
