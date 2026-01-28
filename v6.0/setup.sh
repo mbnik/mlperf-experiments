@@ -195,7 +195,9 @@ install_deps() {
         tqdm \
         requests \
         soundfile \
-        librosa
+        librosa \
+        pandas \
+        boto3
     
     echo -e "${GREEN}  ✓ Dependencies installed${NC}"
 }
