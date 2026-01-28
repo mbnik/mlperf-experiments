@@ -35,7 +35,7 @@ NC='\033[0m'
 print_banner() {
     echo -e "${CYAN}"
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║          MLPerf Inference v${VERSION} Setup Script              ║"
+    echo "║          MLPerf Inference v${VERSION} Setup Script         ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -191,6 +191,7 @@ install_deps() {
         diffusers \
         numpy \
         pillow \
+        pyarrow \
         tqdm \
         requests \
         soundfile \

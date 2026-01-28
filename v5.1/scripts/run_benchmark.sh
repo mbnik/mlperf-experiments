@@ -45,6 +45,7 @@ print_usage() {
     echo "  --samples=N     Number of samples"
     echo "  --mlperf        Use official MLPerf settings"
     echo "  --data=TYPE     Data type: synthetic, real"
+    echo "  --download=M    Download method: hf (default), wget"
     echo "  -h, --help      Show help"
     echo ""
     echo "LLM Options (gptj, llama, mixtral):"
