@@ -443,10 +443,10 @@ download_openorca_wget() {
     # OpenOrca is a public dataset (no auth needed)
     local base_url="https://huggingface.co/datasets/Open-Orca/OpenOrca/resolve/main"
     
-    # Download a subset of the data (1M_GPT4_0613.parquet is ~500MB)
-    echo "  Downloading 1M_GPT4_0613.parquet (~500MB)..."
-    wget -q --show-progress -O "${parquet_dir}/1M_GPT4_0613.parquet" \
-        "${base_url}/1M_GPT4_0613.parquet"
+    # Download a subset of the data (1M-GPT4-Augmented.parquet is ~1GB)
+    echo "  Downloading 1M-GPT4-Augmented.parquet (~1GB)..."
+    wget -q --show-progress -O "${parquet_dir}/1M-GPT4-Augmented.parquet" \
+        "${base_url}/1M-GPT4-Augmented.parquet"
     
     # Extract to JSON using pyarrow
     echo "  Extracting data from parquet files..."
@@ -459,7 +459,7 @@ data_dir = "$data_dir"
 parquet_dir = "$parquet_dir"
 
 # Process OpenOrca data
-table = pq.read_table(os.path.join(parquet_dir, "1M_GPT4_0613.parquet"))
+table = pq.read_table(os.path.join(parquet_dir, "1M-GPT4-Augmented.parquet"))
 data = table.to_pylist()
 
 # Extract test subset (first 10000 for testing)
