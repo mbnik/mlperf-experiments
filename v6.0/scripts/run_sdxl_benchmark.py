@@ -101,7 +101,7 @@ def load_model(args):
             log.info("Loading on CPU (this will be very slow)...")
             pipe = DiffusionPipeline.from_pretrained(
                 args.model_name,
-                torch_dtype=torch_dtype,
+                dtype=torch_dtype,
                 use_safetensors=True,
                 variant="fp16",
             )
@@ -110,7 +110,7 @@ def load_model(args):
             log.info("Loading with model CPU offloading...")
             pipe = DiffusionPipeline.from_pretrained(
                 args.model_name,
-                torch_dtype=torch_dtype,
+                dtype=torch_dtype,
                 use_safetensors=True,
                 variant="fp16",
             )
@@ -120,7 +120,7 @@ def load_model(args):
             log.info("Loading on GPU...")
             pipe = DiffusionPipeline.from_pretrained(
                 args.model_name,
-                torch_dtype=torch_dtype,
+                dtype=torch_dtype,
                 use_safetensors=True,
                 variant="fp16",
             )

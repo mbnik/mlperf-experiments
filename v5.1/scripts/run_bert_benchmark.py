@@ -159,7 +159,7 @@ def load_model(args):
             model = AutoModelForQuestionAnswering.from_pretrained(
                 args.model_name,
                 device_map="auto",
-                torch_dtype=torch.float16 if args.device == "cuda" else torch.float32,
+                dtype=torch.float16 if args.device == "cuda" else torch.float32,
             )
         else:
             model = AutoModelForQuestionAnswering.from_pretrained(args.model_name)

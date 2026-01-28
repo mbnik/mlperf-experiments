@@ -161,7 +161,7 @@ def load_model(args):
         
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
             device_map=device_map,
             quantization_config=quantization_config,
             low_cpu_mem_usage=True,

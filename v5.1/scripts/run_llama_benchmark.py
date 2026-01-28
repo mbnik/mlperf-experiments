@@ -154,16 +154,16 @@ def load_model(args):
     elif args.offload:
         log.info("Using GPU+CPU offloading")
         model_kwargs["device_map"] = "auto"
-        model_kwargs["torch_dtype"] = torch.float16
+        model_kwargs["dtype"] = torch.float16
         
     elif args.device == "cuda":
         log.info("Loading on GPU (full precision FP16)")
-        model_kwargs["torch_dtype"] = torch.float16
+        model_kwargs["dtype"] = torch.float16
         model_kwargs["device_map"] = {"": 0}
         
     else:  # cpu
         log.info("Loading on CPU (FP32)")
-        model_kwargs["torch_dtype"] = torch.float32
+        model_kwargs["dtype"] = torch.float32
     
     # Load model
     try:

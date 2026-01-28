@@ -335,7 +335,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     if [ $EXIT_CODE -eq 1 ] && [ "$USE_OFFLOAD" = false ] && [ "$DEVICE" = "cuda" ]; then
         echo ""
         echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║  ⚠️  GPU OUT OF MEMORY ERROR                                ║${NC}"
+        echo -e "${RED}║  GPU OUT OF MEMORY ERROR                                   ║${NC}"
         echo -e "${RED}╠════════════════════════════════════════════════════════════╣${NC}"
         echo -e "${RED}║  GPT-J 6B requires ~12GB VRAM in FP16 mode.                ║${NC}"
         echo -e "${RED}║                                                            ║${NC}"
@@ -343,7 +343,7 @@ if [ $EXIT_CODE -ne 0 ]; then
         echo -e "${RED}║  1. Use --offload to enable CPU offloading                 ║${NC}"
         echo -e "${RED}║  2. Use --4bit for 4-bit quantization (~6GB VRAM)          ║${NC}"
         echo -e "${RED}║                                                            ║${NC}"
-        echo -e "${RED}║  Example: $0 --offload --mlperf                ║${NC}"
+        echo -e "${RED}║  Example: ./run_gptj.sh --offload --mlperf                 ║${NC}"
         echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
         echo ""
     fi

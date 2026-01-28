@@ -133,7 +133,7 @@ def load_model(args):
     try:
         model = AutoModelForSpeechSeq2Seq.from_pretrained(
             args.model_name,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
             low_cpu_mem_usage=True,
             use_safetensors=True,
             device_map=device_map,
@@ -149,7 +149,7 @@ def load_model(args):
             model=model,
             tokenizer=processor.tokenizer,
             feature_extractor=processor.feature_extractor,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
             device=device if device_map is None else None,
         )
     except torch.cuda.OutOfMemoryError:
