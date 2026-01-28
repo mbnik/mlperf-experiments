@@ -53,7 +53,7 @@ print_usage() {
     echo ""
     echo "Data Options:"
     echo "  synthetic  - Generate synthetic audio (fast, no download)"
-    echo "  real       - Download LibriSpeech test-clean (~350MB)"
+    echo "  real       - Download LibriSpeech dev-clean + dev-other (~700MB)"
     echo ""
     echo "Examples:"
     echo "  $0 --gpu --data=real              # Real LibriSpeech data"
@@ -191,35 +191,54 @@ download_librispeech() {
     echo -e "${CYAN}║              Downloading LibriSpeech Dataset               ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${YELLOW}LibriSpeech test-clean (Official MLPerf dataset)${NC}"
-    echo "  - 2,620 audio samples from read audiobooks"
-    echo "  - ~5.4 hours of speech"
-    echo "  - Download size: ~350MB"
+    echo -e "${YELLOW}LibriSpeech dev-clean + dev-other (Official MLPerf dataset)${NC}"
+    echo "  - dev-clean: ~2,700 samples (~5.4 hours) - clean speech"
+    echo "  - dev-other: ~2,900 samples (~5.3 hours) - more challenging"
+    echo "  - Total: ~10 hours of speech (~700MB)"
     echo ""
     
     mkdir -p "$DATA_DIR"
     cd "$DATA_DIR"
     
-    # Download test-clean subset
-    LIBRI_URL="https://www.openslr.org/resources/12/test-clean.tar.gz"
-    LIBRI_FILE="test-clean.tar.gz"
+    # Download dev-clean subset
+    LIBRI_URL_CLEAN="https://www.openslr.org/resources/12/dev-clean.tar.gz"
+    LIBRI_FILE_CLEAN="dev-clean.tar.gz"
     
-    if [ ! -f "$LIBRI_FILE" ]; then
-        echo -e "${CYAN}Downloading LibriSpeech test-clean...${NC}"
-        wget -q --show-progress "$LIBRI_URL" -O "$LIBRI_FILE"
+    if [ ! -f "$LIBRI_FILE_CLEAN" ]; then
+        echo -e "${CYAN}Downloading LibriSpeech dev-clean...${NC}"
+        wget -q --show-progress "$LIBRI_URL_CLEAN" -O "$LIBRI_FILE_CLEAN"
     else
-        echo -e "${GREEN}✓ Archive already downloaded${NC}"
+        echo -e "${GREEN}✓ dev-clean archive already downloaded${NC}"
     fi
     
-    # Extract
-    if [ ! -d "LibriSpeech/test-clean" ]; then
-        echo -e "${CYAN}Extracting...${NC}"
-        tar -xzf "$LIBRI_FILE"
+    # Download dev-other subset
+    LIBRI_URL_OTHER="https://www.openslr.org/resources/12/dev-other.tar.gz"
+    LIBRI_FILE_OTHER="dev-other.tar.gz"
+    
+    if [ ! -f "$LIBRI_FILE_OTHER" ]; then
+        echo -e "${CYAN}Downloading LibriSpeech dev-other...${NC}"
+        wget -q --show-progress "$LIBRI_URL_OTHER" -O "$LIBRI_FILE_OTHER"
     else
-        echo -e "${GREEN}✓ Already extracted${NC}"
+        echo -e "${GREEN}✓ dev-other archive already downloaded${NC}"
     fi
     
-    # Create manifest file for easy loading
+    # Extract dev-clean
+    if [ ! -d "LibriSpeech/dev-clean" ]; then
+        echo -e "${CYAN}Extracting dev-clean...${NC}"
+        tar -xzf "$LIBRI_FILE_CLEAN"
+    else
+        echo -e "${GREEN}✓ dev-clean already extracted${NC}"
+    fi
+    
+    # Extract dev-other
+    if [ ! -d "LibriSpeech/dev-other" ]; then
+        echo -e "${CYAN}Extracting dev-other...${NC}"
+        tar -xzf "$LIBRI_FILE_OTHER"
+    else
+        echo -e "${GREEN}✓ dev-other already extracted${NC}"
+    fi
+    
+    # Create manifest file for easy loading (combining both splits)
     echo -e "${CYAN}Creating audio manifest...${NC}"
     python3 << 'PYTHON_EOF'
 import os
@@ -227,30 +246,42 @@ import json
 from pathlib import Path
 
 data_dir = os.environ.get('DATA_DIR', 'data/librispeech')
-libri_dir = Path(data_dir) / "LibriSpeech" / "test-clean"
+base_dir = Path(data_dir) / "LibriSpeech"
 
 manifest = []
-for speaker_dir in sorted(libri_dir.iterdir()):
-    if not speaker_dir.is_dir():
+
+# Process both dev-clean and dev-other splits
+for split in ["dev-clean", "dev-other"]:
+    libri_dir = base_dir / split
+    if not libri_dir.exists():
+        print(f"Warning: {split} not found")
         continue
-    for chapter_dir in sorted(speaker_dir.iterdir()):
-        if not chapter_dir.is_dir():
+    
+    for speaker_dir in sorted(libri_dir.iterdir()):
+        if not speaker_dir.is_dir():
             continue
-        # Read transcript
-        trans_file = list(chapter_dir.glob("*.trans.txt"))[0]
-        with open(trans_file) as f:
-            for line in f:
-                parts = line.strip().split(" ", 1)
-                if len(parts) == 2:
-                    audio_id, text = parts
-                    audio_path = chapter_dir / f"{audio_id}.flac"
-                    if audio_path.exists():
-                        manifest.append({
-                            "audio_path": str(audio_path),
-                            "text": text,
-                            "speaker_id": speaker_dir.name,
-                            "chapter_id": chapter_dir.name,
-                        })
+        for chapter_dir in sorted(speaker_dir.iterdir()):
+            if not chapter_dir.is_dir():
+                continue
+            # Read transcript
+            trans_files = list(chapter_dir.glob("*.trans.txt"))
+            if not trans_files:
+                continue
+            trans_file = trans_files[0]
+            with open(trans_file) as f:
+                for line in f:
+                    parts = line.strip().split(" ", 1)
+                    if len(parts) == 2:
+                        audio_id, text = parts
+                        audio_path = chapter_dir / f"{audio_id}.flac"
+                        if audio_path.exists():
+                            manifest.append({
+                                "audio_path": str(audio_path),
+                                "text": text,
+                                "speaker_id": speaker_dir.name,
+                                "chapter_id": chapter_dir.name,
+                                "split": split,
+                            })
 
 # Save manifest
 manifest_path = Path(data_dir) / "manifest.json"
@@ -258,6 +289,8 @@ with open(manifest_path, 'w') as f:
     json.dump(manifest, f, indent=2)
 
 print(f"✓ Created manifest with {len(manifest)} samples")
+print(f"  - dev-clean: {sum(1 for m in manifest if m['split'] == 'dev-clean')} samples")
+print(f"  - dev-other: {sum(1 for m in manifest if m['split'] == 'dev-other')} samples")
 print(f"  Location: {manifest_path}")
 PYTHON_EOF
 
