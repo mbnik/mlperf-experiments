@@ -73,6 +73,38 @@ def load_cnn_dailymail(data_dir, max_examples):
     return prompts, references
 
 
+def load_openorca(data_dir, max_examples):
+    """Load OpenOrca data as prompts (for llama2-70b MLPerf compliance)"""
+    test_path = Path(data_dir) / "test.json"
+    
+    if not test_path.exists():
+        log.warning(f"OpenOrca not found at {test_path}")
+        return None
+    
+    with open(test_path) as f:
+        data = json.load(f)
+    
+    prompts = []
+    references = []
+    for item in data[:max_examples]:
+        # OpenOrca format has "question" and "response" fields
+        if "question" in item:
+            prompt = item["question"]
+        elif "system_prompt" in item and "question" in item:
+            prompt = f"{item['system_prompt']}\n\n{item['question']}"
+        else:
+            continue
+        
+        prompts.append(prompt)
+        if "response" in item:
+            references.append(item["response"])
+        else:
+            references.append("")
+    
+    log.info(f"Loaded {len(prompts)} prompts from OpenOrca")
+    return prompts, references
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="Llama Model Benchmark")
     parser.add_argument("--model-name", type=str, required=True,
@@ -87,7 +119,10 @@ def get_args():
                        help="Quantization: none (FP16), 4bit, 8bit")
     parser.add_argument("--data-type", type=str, default="synthetic",
                        choices=["synthetic", "real"],
-                       help="Data type: synthetic or real CNN-DailyMail")
+                       help="Data type: synthetic or real data")
+    parser.add_argument("--dataset", type=str, default="cnn-dailymail",
+                       choices=["cnn-dailymail", "openorca"],
+                       help="Dataset: cnn-dailymail (llama3.1-8b) or openorca (llama2-70b)")
     parser.add_argument("--data-dir", type=str, default="data/cnn-dailymail")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=128)
@@ -197,11 +232,16 @@ def run_benchmark(model, tokenizer, args):
     log.info("=" * 60)
     log.info("Starting Llama Benchmark")
     log.info("=" * 60)
+    log.info(f"Dataset: {args.dataset}")
     
     # Load prompts
     references = None
     if args.data_type == "real":
-        result = load_cnn_dailymail(args.data_dir, args.max_examples)
+        if args.dataset == "openorca":
+            result = load_openorca(args.data_dir, args.max_examples)
+        else:
+            result = load_cnn_dailymail(args.data_dir, args.max_examples)
+        
         if result is None:
             log.warning("Falling back to synthetic prompts")
             prompts = SYNTHETIC_PROMPTS[:args.max_examples]

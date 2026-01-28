@@ -38,6 +38,7 @@ QUANTIZATION="none"
 MLPERF_MODE=false
 MAX_NEW_TOKENS=128
 DOWNLOAD_METHOD="hf"
+DATASET="auto"  # auto, cnn-dailymail, openorca
 EXTRA_ARGS=()
 
 print_usage() {
@@ -63,12 +64,15 @@ print_usage() {
     echo ""
     echo "Data Options:"
     echo "  --data=TYPE     Data type: synthetic, real (default: synthetic)"
+    echo "  --dataset=DS    Dataset: auto, cnn-dailymail, openorca (default: auto)"
+    echo "                  auto: cnn-dailymail for 8B, openorca for 70B models"
     echo "  --samples=N     Number of samples (default: 10)"
     echo "  --download=M    Download method: hf (default), wget"
     echo ""
     echo "MLPerf Compliance:"
     echo "  --mlperf        Use official MLPerf settings (max_new_tokens=1024, real data)"
-    echo "                  Automatically downloads CNN-DailyMail dataset"
+    echo "                  llama3.1-8b uses CNN-DailyMail dataset"
+    echo "                  llama2-70b uses OpenOrca dataset"
     echo ""
     echo "Memory Requirements (FP16):"
     echo "  llama2-7b:   ~14GB VRAM  |  4-bit: ~4GB"
@@ -83,7 +87,7 @@ print_usage() {
     echo "  $0 llama3-8b --offload                # 8B with CPU offload (FP16)"
     echo "  $0 llama2-70b --4bit                  # 70B quantized (needs ~35GB)"
     echo "  $0 llama3-8b --gpu --data=real        # With CNN-DailyMail data"
-    echo "  $0 llama3-8b --gpu --4bit --mlperf    # Official MLPerf settings"
+    echo "  $0 llama2-70b --4bit --mlperf         # 70B with OpenOrca (MLPerf)"
     echo ""
     echo "NOTE: --4bit/--8bit and --offload cannot be combined!"
     echo "      bitsandbytes quantization does not support CPU offloading."
@@ -429,6 +433,87 @@ download_cnn_dailymail() {
     fi
 }
 
+download_openorca_wget() {
+    local data_dir="${PROJECT_DIR}/data/openorca"
+    local parquet_dir="${data_dir}/parquet"
+    
+    echo -e "${CYAN}► Downloading OpenOrca via wget...${NC}"
+    mkdir -p "$parquet_dir"
+    
+    # OpenOrca is a public dataset (no auth needed)
+    local base_url="https://huggingface.co/datasets/Open-Orca/OpenOrca/resolve/main"
+    
+    # Download a subset of the data (1M_GPT4_0613.parquet is ~500MB)
+    echo "  Downloading 1M_GPT4_0613.parquet (~500MB)..."
+    wget -q --show-progress -O "${parquet_dir}/1M_GPT4_0613.parquet" \
+        "${base_url}/1M_GPT4_0613.parquet"
+    
+    # Extract to JSON using pyarrow
+    echo "  Extracting data from parquet files..."
+    python3 << PYTHON_EOF
+import pyarrow.parquet as pq
+import json
+import os
+
+data_dir = "$data_dir"
+parquet_dir = "$parquet_dir"
+
+# Process OpenOrca data
+table = pq.read_table(os.path.join(parquet_dir, "1M_GPT4_0613.parquet"))
+data = table.to_pylist()
+
+# Extract test subset (first 10000 for testing)
+test_data = [{"question": row["question"], "response": row["response"]} 
+             for row in data[:10000]]
+with open(os.path.join(data_dir, "test.json"), "w") as f:
+    json.dump(test_data, f)
+print(f"  ✓ Saved {len(test_data)} test prompts")
+PYTHON_EOF
+    
+    echo -e "${GREEN}✓ OpenOrca downloaded via wget${NC}"
+}
+
+download_openorca_hf() {
+    local data_dir="${PROJECT_DIR}/data/openorca"
+    
+    echo -e "${CYAN}Downloading OpenOrca via HuggingFace...${NC}"
+    mkdir -p "$data_dir"
+    
+    python3 << PYTHON_EOF
+from datasets import load_dataset
+import json
+import os
+
+data_dir = "$data_dir"
+print("Loading OpenOrca from HuggingFace (this may take a while)...")
+dataset = load_dataset("Open-Orca/OpenOrca", split="train", streaming=False)
+
+# Take a subset for testing
+test_data = [{"question": item["question"], "response": item["response"]} 
+             for item in dataset.select(range(min(10000, len(dataset))))]
+with open(os.path.join(data_dir, "test.json"), "w") as f:
+    json.dump(test_data, f)
+print(f"✓ Saved {len(test_data)} test prompts")
+PYTHON_EOF
+    
+    echo -e "${GREEN}✓ OpenOrca ready${NC}"
+}
+
+download_openorca() {
+    local data_dir="${PROJECT_DIR}/data/openorca"
+    
+    if [[ -f "$data_dir/test.json" ]]; then
+        echo -e "${GREEN}✓ OpenOrca data found${NC}"
+        return 0
+    fi
+    
+    if [[ "$DOWNLOAD_METHOD" == "wget" ]]; then
+        download_openorca_wget
+    else
+        download_openorca_hf
+    fi
+}
+
 download_model_wget() {
     local model_id="$1"
     local model_dir="${PROJECT_DIR}/models/llama/${MODEL}"
@@ -608,6 +693,10 @@ while [[ $# -gt 0 ]]; do
             DOWNLOAD_METHOD="${1#*=}"
             shift
             ;;
+        --dataset=*)
+            DATASET="${1#*=}"
+            shift
+            ;;
         *)
             EXTRA_ARGS+=("$1")
             shift
@@ -617,6 +706,18 @@ done
 
 # Get model info
 get_model_info "$MODEL"
+
+# Auto-select dataset based on model if DATASET is "auto"
+if [[ "$DATASET" == "auto" ]]; then
+    case $MODEL in
+        llama2-70b|llama3-70b)
+            DATASET="openorca"
+            ;;
+        *)
+            DATASET="cnn-dailymail"
+            ;;
+    esac
+fi
 
 # Apply MLPerf settings if --mlperf flag is set
 if [[ "$MLPERF_MODE" == "true" ]]; then
@@ -656,6 +757,7 @@ echo -e "Precision:    ${QUANT_STR}"
 echo -e "Required:     ~${REQUIRED_MEM}GB VRAM"
 echo -e "Device:       ${DEVICE}"
 echo -e "Data:         ${DATA_TYPE}"
+echo -e "Dataset:      ${DATASET}"
 echo -e "Samples:      ${MAX_EXAMPLES}"
 
 # MLPerf status
@@ -735,8 +837,13 @@ fi
 
 # Download data if needed
 if [[ "$DATA_TYPE" == "real" ]]; then
-    download_cnn_dailymail
-    DATA_DIR="${PROJECT_DIR}/data/cnn-dailymail"
+    if [[ "$DATASET" == "openorca" ]]; then
+        download_openorca
+        DATA_DIR="${PROJECT_DIR}/data/openorca"
+    else
+        download_cnn_dailymail
+        DATA_DIR="${PROJECT_DIR}/data/cnn-dailymail"
+    fi
 fi
 
 # Create results directory
@@ -768,12 +875,20 @@ echo -e "${CYAN}║              Running Llama Benchmark                       �
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+# Set data directory based on dataset
+if [[ "$DATASET" == "openorca" ]]; then
+    DATA_DIR_PATH="${PROJECT_DIR}/data/openorca"
+else
+    DATA_DIR_PATH="${PROJECT_DIR}/data/cnn-dailymail"
+fi
+
 CMD="python3 ${SCRIPT_DIR}/run_llama_benchmark.py"
 CMD="$CMD --model-name $MODEL_PATH"
 CMD="$CMD --device $DEVICE"
 CMD="$CMD --quantization $QUANTIZATION"
 CMD="$CMD --data-type $DATA_TYPE"
-CMD="$CMD --data-dir ${PROJECT_DIR}/data/cnn-dailymail"
+CMD="$CMD --dataset $DATASET"
+CMD="$CMD --data-dir $DATA_DIR_PATH"
 CMD="$CMD --max-examples $MAX_EXAMPLES"
 CMD="$CMD --max-new-tokens $MAX_NEW_TOKENS"
 CMD="$CMD --output-dir $RESULTS_DIR"
