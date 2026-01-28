@@ -159,10 +159,19 @@ Each version folder has its own `setup.sh` with these options:
 
 ## Requirements
 
-- Python 3.8+
+### Tested Environment
+
+- **OS:** Ubuntu 24.04 LTS
+- **Kernel:** 6.8.x
+- **Python:** 3.10 (required)
+
+### Hardware Requirements
+
 - CUDA 11.x+ (for GPU)
 - 16GB+ RAM (32GB+ for LLMs)
 - GPU: 8GB+ VRAM (24GB+ for LLMs without quantization)
+
+> **Note:** This project has only been tested on Ubuntu 24.04. Other Linux distributions may work but are not officially supported.
 
 ### HuggingFace Token (for gated models)
 

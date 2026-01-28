@@ -47,8 +47,9 @@ This directory contains benchmark scripts for MLPerf Inference v5.1 and v6.0. Al
 | **GPU**     | NVIDIA GeForce RTX 3080 Ti (12GB GDDR6X) |
 | **CPU**     | Intel Xeon (Dell Precision 7920)         |
 | **RAM**     | 64GB+ DDR4                               |
-| **OS**      | Ubuntu Linux                             |
-| **Python**  | 3.10                                     |
+| **OS**      | Ubuntu 24.04 LTS                         |
+| **Kernel**  | 6.8.x                                    |
+| **Python**  | 3.10 (required)                          |
 | **PyTorch** | 2.x with CUDA 12.x                       |
 
 ### v5.1 Results Summary

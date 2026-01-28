@@ -4,6 +4,12 @@ This folder contains benchmark scripts for **MLPerf Inference v5.1**.
 
 ## Prerequisites
 
+### System Requirements
+
+- **OS:** Ubuntu 24.04 LTS (tested)
+- **Kernel:** 6.8.x
+- **Python:** 3.10 (required)
+
 ```bash
 # Create and activate conda environment (Python 3.10 required)
 conda create --name mlperf python=3.10 -y

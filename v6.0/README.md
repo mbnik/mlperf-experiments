@@ -2,6 +2,14 @@
 
 This folder contains MLPerf Inference v6.0 benchmark setup and runner scripts.
 
+## Prerequisites
+
+### System Requirements
+
+- **OS:** Ubuntu 24.04 LTS (tested)
+- **Kernel:** 6.8.x
+- **Python:** 3.10 (required)
+
 ## Quick Start
 
 ```bash

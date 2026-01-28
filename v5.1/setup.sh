@@ -188,6 +188,7 @@ install_deps() {
         accelerate \
         bitsandbytes \
         datasets \
+        diffusers \
         numpy \
         pillow \
         tqdm \
