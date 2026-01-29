@@ -428,9 +428,9 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
     
     total_time = time.perf_counter() - start_time
     
-    # Calculate metrics
-    all_predictions = np.array(all_predictions)
-    all_labels = np.array(all_labels)
+    # Calculate metrics - ensure arrays are 1D
+    all_predictions = np.array(all_predictions).ravel()
+    all_labels = np.array(all_labels).ravel()
     
     # Accuracy (threshold at 0.5)
     binary_preds = (all_predictions > 0.5).astype(int)
