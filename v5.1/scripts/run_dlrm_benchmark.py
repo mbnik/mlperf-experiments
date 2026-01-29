@@ -140,6 +140,8 @@ class DLRMDataset:
         self.labels = None
         self.dense_features = None
         self.sparse_features = None
+        self.total_available = 0
+        self.data_format = 'unknown'
         self._load_data()
     
     def _load_data(self):
@@ -148,14 +150,18 @@ class DLRMDataset:
         # Try different formats
         if os.path.exists(os.path.join(self.data_dir, "labels.npy")):
             # Our synthetic/sample format
+            self.data_format = 'synthetic'
             self.labels = np.load(os.path.join(self.data_dir, "labels.npy"))
             self.dense_features = np.load(os.path.join(self.data_dir, "dense_features.npy"))
             self.sparse_features = np.load(os.path.join(self.data_dir, "sparse_features.npy"))
+            self.total_available = len(self.labels)
         elif os.path.exists(os.path.join(self.data_dir, "day_23_labels.npy")):
             # Real MLPerf Criteo format - separate files
+            self.data_format = 'criteo_real'
             log.info("Loading real Criteo dataset (separate files)...")
             self.labels = np.load(os.path.join(self.data_dir, "day_23_labels.npy"))
             self.dense_features = np.load(os.path.join(self.data_dir, "day_23_dense.npy"))
+            self.total_available = len(self.labels)
             # For sparse features, load from the npz archive
             sparse_file = os.path.join(self.data_dir, "day_23_sparse_multi_hot.npz")
             if os.path.exists(sparse_file):
@@ -184,12 +190,17 @@ class DLRMDataset:
                 raise FileNotFoundError(f"Sparse file not found: {sparse_file}")
         elif os.path.exists(os.path.join(self.data_dir, "day_23_sparse_multi_hot.npz")):
             # Compressed format (all in one npz with labels/dense/sparse keys)
+            self.data_format = 'criteo_compressed'
             data = np.load(os.path.join(self.data_dir, "day_23_sparse_multi_hot.npz"))
             self.labels = data['labels']
             self.dense_features = data['dense']
             self.sparse_features = data['sparse']
+            self.total_available = len(self.labels)
         else:
             raise FileNotFoundError(f"No valid data format found in {self.data_dir}")
+        
+        # Store total before limiting
+        self.total_available = len(self.labels)
         
         # Limit samples if requested
         if self.max_samples and self.max_samples < len(self.labels):
@@ -210,6 +221,28 @@ class DLRMDataset:
         sparse = torch.from_numpy(self.sparse_features[start:end]).long()
         
         return labels, dense, sparse
+    
+    def get_data_info(self) -> Dict:
+        """Get information about the dataset"""
+        is_real = self.data_format in ['criteo_real', 'criteo_compressed']
+        
+        dataset_name = 'Criteo Terabyte' if is_real else 'Synthetic Criteo-like'
+        note = 'Real Criteo click-through rate prediction data' if is_real else 'Random synthetic data for testing only'
+        
+        return {
+            'type': 'real' if is_real else 'synthetic',
+            'dataset': dataset_name,
+            'source': self.data_dir,
+            'format': self.data_format,
+            'samples_used': len(self.labels),
+            'samples_available': self.total_available,
+            'dense_features': self.dense_features.shape[1] if self.dense_features is not None else 13,
+            'sparse_features': self.sparse_features.shape[1] if self.sparse_features is not None else 26,
+            'embedding_tables': 26,
+            'verified': is_real,
+            'mlperf_compliant': is_real,
+            'note': note
+        }
 
 
 # ============================================================================
@@ -420,7 +453,7 @@ def load_model(args) -> DLRM:
     return model
 
 
-def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
+def run_benchmark(model: DLRM, dataset: DLRMDataset, args, data_info: Dict = None) -> Dict:
     """Run the benchmark"""
     log.info("=" * 60)
     log.info("Starting DLRM Benchmark")
@@ -598,6 +631,28 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
         print("Performance:        🐢 Slow")
     print("=" * 60)
     
+    # Print data information
+    if data_info:
+        print("\n" + "=" * 60)
+        print("DATA INFORMATION")
+        print("=" * 60)
+        print(f"Type:               {data_info['type']}")
+        print(f"Dataset:            {data_info['dataset']}")
+        print(f"Source:             {data_info['source']}")
+        print(f"Format:             {data_info['format']}")
+        print(f"Samples Used:       {data_info['samples_used']:,}")
+        print(f"Samples Available:  {data_info['samples_available']:,}")
+        print(f"Dense Features:     {data_info['dense_features']}")
+        print(f"Sparse Features:    {data_info['sparse_features']}")
+        print(f"Embedding Tables:   {data_info['embedding_tables']}")
+        print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+        print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+        print(f"Note:               {data_info['note']}")
+        print("=" * 60)
+        
+        # Add data_info to results
+        results['data_info'] = data_info
+    
     return results
 
 
@@ -617,11 +672,14 @@ def main():
     # Load dataset
     dataset = DLRMDataset(args.data_dir, args.max_examples)
     
+    # Get data info
+    data_info = dataset.get_data_info()
+    
     # Load model
     model = load_model(args)
     
     # Run benchmark
-    results = run_benchmark(model, dataset, args)
+    results = run_benchmark(model, dataset, args, data_info=data_info)
     
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -620,12 +620,30 @@ if [ "$SKIP_DOWNLOAD" = false ]; then
     esac
 fi
 
+# Auto-detect actual data type for display
+ACTUAL_DATA_TYPE="$DATA_TYPE"
+if [ -d "$DATA_DIR/case_00000" ] || [ -f "$DATA_DIR/preprocessed/volumes.npy" ]; then
+    ACTUAL_DATA_TYPE="real"
+elif [ -f "$DATA_DIR/volumes.npy" ]; then
+    # Check metadata to distinguish real preprocessed from synthetic
+    if [ -f "$DATA_DIR/metadata.json" ]; then
+        TYPE_CHECK=$(python3 -c "import json; d=json.load(open('$DATA_DIR/metadata.json')); print(d.get('type', 'synthetic'))" 2>/dev/null || echo "synthetic")
+        if [[ "$TYPE_CHECK" == *"kits19"* ]]; then
+            ACTUAL_DATA_TYPE="real"
+        else
+            ACTUAL_DATA_TYPE="synthetic"
+        fi
+    else
+        ACTUAL_DATA_TYPE="synthetic"
+    fi
+fi
+
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║              3D-UNet Benchmark Configuration               ║${NC}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo "  Model Size: $MODEL_SIZE"
-echo "  Data Type:  $DATA_TYPE"
+echo "  Data Type:  $ACTUAL_DATA_TYPE"
 echo "  Device:     $DEVICE"
 echo "  Offload:    $USE_OFFLOAD"
 echo "  Data Dir:   $DATA_DIR"

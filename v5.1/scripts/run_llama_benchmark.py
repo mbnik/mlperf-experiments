@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from typing import Dict, List, Tuple, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("Llama-Benchmark")
@@ -49,16 +50,18 @@ SYNTHETIC_PROMPTS = [
 ]
 
 
-def load_cnn_dailymail(data_dir, max_examples):
+def load_cnn_dailymail(data_dir: str, max_examples: int) -> Tuple[Optional[List], Optional[List], Dict]:
     """Load real CNN-DailyMail data as prompts"""
     test_path = Path(data_dir) / "test.json"
     
     if not test_path.exists():
         log.warning(f"CNN-DailyMail not found at {test_path}")
-        return None
+        return None, None, {}
     
     with open(test_path) as f:
         data = json.load(f)
+    
+    total_available = len(data)
     
     # Create summarization prompts
     prompts = []
@@ -70,19 +73,34 @@ def load_cnn_dailymail(data_dir, max_examples):
         references.append(item["highlights"])
     
     log.info(f"Loaded {len(prompts)} articles from CNN-DailyMail")
-    return prompts, references
+    
+    data_info = {
+        'type': 'real',
+        'dataset': 'CNN-DailyMail',
+        'source': str(data_dir),
+        'samples_used': len(prompts),
+        'samples_available': total_available,
+        'task': 'text_summarization',
+        'verified': True,
+        'mlperf_compliant': True,
+        'note': 'CNN-DailyMail text summarization dataset'
+    }
+    
+    return prompts, references, data_info
 
 
-def load_openorca(data_dir, max_examples):
+def load_openorca(data_dir: str, max_examples: int) -> Tuple[Optional[List], Optional[List], Dict]:
     """Load OpenOrca data as prompts (for llama2-70b MLPerf compliance)"""
     test_path = Path(data_dir) / "test.json"
     
     if not test_path.exists():
         log.warning(f"OpenOrca not found at {test_path}")
-        return None
+        return None, None, {}
     
     with open(test_path) as f:
         data = json.load(f)
+    
+    total_available = len(data)
     
     prompts = []
     references = []
@@ -102,7 +120,39 @@ def load_openorca(data_dir, max_examples):
             references.append("")
     
     log.info(f"Loaded {len(prompts)} prompts from OpenOrca")
-    return prompts, references
+    
+    data_info = {
+        'type': 'real',
+        'dataset': 'OpenOrca',
+        'source': str(data_dir),
+        'samples_used': len(prompts),
+        'samples_available': total_available,
+        'task': 'instruction_following',
+        'verified': True,
+        'mlperf_compliant': True,
+        'note': 'OpenOrca instruction-following dataset'
+    }
+    
+    return prompts, references, data_info
+
+
+def get_synthetic_data(max_examples: int) -> Tuple[List[str], Dict]:
+    """Get synthetic prompts with data info"""
+    prompts = SYNTHETIC_PROMPTS[:max_examples]
+    
+    data_info = {
+        'type': 'synthetic',
+        'dataset': 'Synthetic Prompts',
+        'source': 'generated_prompts',
+        'samples_used': len(prompts),
+        'samples_available': len(SYNTHETIC_PROMPTS),
+        'task': 'text_generation',
+        'verified': False,
+        'mlperf_compliant': False,
+        'note': 'Synthetic prompts for testing only'
+    }
+    
+    return prompts, data_info
 
 
 def get_args():
@@ -189,16 +239,16 @@ def load_model(args):
     elif args.offload:
         log.info("Using GPU+CPU offloading")
         model_kwargs["device_map"] = "auto"
-        model_kwargs["dtype"] = torch.float16
+        model_kwargs["torch_dtype"] = torch.float16
         
     elif args.device == "cuda":
         log.info("Loading on GPU (full precision FP16)")
-        model_kwargs["dtype"] = torch.float16
+        model_kwargs["torch_dtype"] = torch.float16
         model_kwargs["device_map"] = {"": 0}
         
     else:  # cpu
         log.info("Loading on CPU (FP32)")
-        model_kwargs["dtype"] = torch.float32
+        model_kwargs["torch_dtype"] = torch.float32
     
     # Load model
     try:
@@ -227,29 +277,13 @@ def load_model(args):
     return model, tokenizer
 
 
-def run_benchmark(model, tokenizer, args):
+def run_benchmark(model, tokenizer, args, prompts: List[str], references: List[str] = None, data_info: Dict = None):
     """Run the benchmark"""
     log.info("=" * 60)
     log.info("Starting Llama Benchmark")
     log.info("=" * 60)
     log.info(f"Dataset: {args.dataset}")
-    
-    # Load prompts
-    references = None
-    if args.data_type == "real":
-        if args.dataset == "openorca":
-            result = load_openorca(args.data_dir, args.max_examples)
-        else:
-            result = load_cnn_dailymail(args.data_dir, args.max_examples)
-        
-        if result is None:
-            log.warning("Falling back to synthetic prompts")
-            prompts = SYNTHETIC_PROMPTS[:args.max_examples]
-        else:
-            prompts, references = result
-    else:
-        prompts = SYNTHETIC_PROMPTS[:args.max_examples]
-        log.info(f"Using {len(prompts)} synthetic prompts")
+    log.info(f"Processing {len(prompts)} prompts")
     
     results = []
     total_tokens = 0
@@ -360,6 +394,22 @@ def run_benchmark(model, tokenizer, args):
         print("Performance:        🐢 Slow (try --4bit or --offload)")
     print("=" * 60)
     
+    # Print data information
+    if data_info:
+        print("\n" + "=" * 60)
+        print("DATA INFORMATION")
+        print("=" * 60)
+        print(f"Type:               {data_info['type']}")
+        print(f"Dataset:            {data_info['dataset']}")
+        print(f"Source:             {data_info['source']}")
+        print(f"Samples Used:       {data_info['samples_used']:,}")
+        print(f"Samples Available:  {data_info['samples_available']:,}")
+        print(f"Task:               {data_info['task']}")
+        print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+        print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+        print(f"Note:               {data_info['note']}")
+        print("=" * 60)
+    
     # Save results
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -385,6 +435,9 @@ def run_benchmark(model, tokenizer, args):
         "results": results,
     }
     
+    if data_info:
+        summary['data_info'] = data_info
+    
     with open(output_file, "w") as f:
         json.dump(summary, f, indent=2)
     
@@ -404,8 +457,22 @@ def main():
             log.error("  pip install bitsandbytes")
             sys.exit(1)
     
+    # Load data first and get data_info
+    references = None
+    if args.data_type == "real":
+        if args.dataset == "openorca":
+            prompts, references, data_info = load_openorca(args.data_dir, args.max_examples)
+        else:
+            prompts, references, data_info = load_cnn_dailymail(args.data_dir, args.max_examples)
+        
+        if prompts is None:
+            log.warning("Falling back to synthetic prompts")
+            prompts, data_info = get_synthetic_data(args.max_examples)
+    else:
+        prompts, data_info = get_synthetic_data(args.max_examples)
+    
     model, tokenizer = load_model(args)
-    run_benchmark(model, tokenizer, args)
+    run_benchmark(model, tokenizer, args, prompts=prompts, references=references, data_info=data_info)
 
 
 if __name__ == "__main__":

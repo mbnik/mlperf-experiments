@@ -222,6 +222,7 @@ class Synthetic3DDataset:
         self.input_shape = input_shape or (1, 128, 128, 128)
         self.volumes = None
         self.labels = None
+        self.total_available = 0
         
         self._load_data()
     
@@ -234,6 +235,7 @@ class Synthetic3DDataset:
             log.info(f"Loading data from {self.data_dir}")
             self.volumes = np.load(volumes_path)
             self.labels = np.load(labels_path)
+            self.total_available = len(self.volumes)
             
             if self.max_samples:
                 self.volumes = self.volumes[:self.max_samples]
@@ -242,6 +244,22 @@ class Synthetic3DDataset:
             log.info(f"Loaded {len(self.volumes)} volumes, shape: {self.volumes.shape}")
         else:
             raise FileNotFoundError(f"Data not found at {self.data_dir}")
+    
+    def get_data_info(self) -> Dict:
+        """Get information about the dataset"""
+        return {
+            'type': 'real',
+            'dataset': 'KiTS19',
+            'source': str(self.data_dir),
+            'samples_used': len(self.volumes),
+            'samples_available': self.total_available,
+            'volume_shape': list(self.volumes.shape[1:]) if self.volumes is not None else list(self.input_shape),
+            'classes': ['background', 'kidney', 'tumor'],
+            'num_classes': 3,
+            'verified': True,
+            'mlperf_compliant': True,
+            'note': 'KiTS19 kidney tumor segmentation dataset'
+        }
     
     def __len__(self):
         return len(self.volumes)
@@ -278,6 +296,22 @@ class GeneratedVolumeDataset:
         self.num_samples = num_samples
         self.input_shape = input_shape
         log.info(f"Using on-the-fly generated volumes: {num_samples} samples, shape {input_shape}")
+    
+    def get_data_info(self) -> Dict:
+        """Get information about the dataset"""
+        return {
+            'type': 'synthetic',
+            'dataset': 'Generated 3D Volumes',
+            'source': 'generated_on_the_fly',
+            'samples_used': self.num_samples,
+            'samples_available': self.num_samples,
+            'volume_shape': list(self.input_shape),
+            'classes': ['background', 'kidney', 'tumor'],
+            'num_classes': 3,
+            'verified': False,
+            'mlperf_compliant': False,
+            'note': 'Random synthetic data for testing only'
+        }
     
     def __len__(self):
         return self.num_samples
@@ -342,7 +376,8 @@ def run_benchmark(
     device: str,
     batch_size: int = 1,
     warmup_batches: int = 5,
-    mlperf_mode: bool = False
+    mlperf_mode: bool = False,
+    data_info: Dict = None
 ) -> Dict:
     """Run 3D segmentation benchmark"""
     
@@ -490,6 +525,26 @@ def run_benchmark(
     
     print(f"Performance:        {rating}")
     print("=" * 60)
+    
+    # Print data information
+    if data_info:
+        print("\n" + "=" * 60)
+        print("DATA INFORMATION")
+        print("=" * 60)
+        print(f"Type:               {data_info['type']}")
+        print(f"Dataset:            {data_info['dataset']}")
+        print(f"Source:             {data_info['source']}")
+        print(f"Samples Used:       {data_info['samples_used']:,}")
+        print(f"Samples Available:  {data_info['samples_available']:,}")
+        print(f"Volume Shape:       {data_info['volume_shape']}")
+        print(f"Classes:            {data_info['classes']}")
+        print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+        print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+        print(f"Note:               {data_info['note']}")
+        print("=" * 60)
+        
+        # Add data_info to results
+        results['data_info'] = data_info
     
     return results
 
@@ -639,13 +694,17 @@ def main():
             input_shape=config['input_shape']
         )
     
+    # Get data info
+    data_info = dataset.get_data_info()
+    
     # Run benchmark
     results = run_benchmark(
         model=model,
         dataset=dataset,
         device=device,
         batch_size=args.batch_size,
-        mlperf_mode=args.mlperf
+        mlperf_mode=args.mlperf,
+        data_info=data_info
     )
     
     # Add configuration

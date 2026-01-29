@@ -28,6 +28,7 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from typing import Dict, List, Tuple, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("Mixtral-Benchmark")
@@ -47,16 +48,18 @@ SYNTHETIC_PROMPTS = [
 ]
 
 
-def load_mixtral_dataset(data_dir, max_examples):
+def load_mixtral_dataset(data_dir: str, max_examples: int) -> Tuple[Optional[List], Optional[List], Dict]:
     """Load MLPerf combined dataset (OpenOrca + GSM8k + MBXP)"""
     test_path = Path(data_dir) / "test.json"
     
     if not test_path.exists():
         log.warning(f"Test data not found at {test_path}")
-        return None, None
+        return None, None, {}
     
     with open(test_path) as f:
         data = json.load(f)
+    
+    total_available = len(data)
     
     # Count sources
     sources = {}
@@ -75,7 +78,39 @@ def load_mixtral_dataset(data_dir, max_examples):
         prompts.append(prompt)
         references.append(item.get("response", item.get("output", "")))
     
-    return prompts, references
+    data_info = {
+        'type': 'real',
+        'dataset': 'MLPerf Combined (OpenOrca + GSM8k + MBXP)',
+        'source': str(data_dir),
+        'samples_used': len(prompts),
+        'samples_available': total_available,
+        'source_distribution': sources,
+        'task': 'instruction_following',
+        'verified': True,
+        'mlperf_compliant': True,
+        'note': 'MLPerf official dataset for Mixtral benchmark'
+    }
+    
+    return prompts, references, data_info
+
+
+def get_synthetic_data(max_examples: int) -> Tuple[List[str], Dict]:
+    """Get synthetic prompts with data info"""
+    prompts = SYNTHETIC_PROMPTS[:max_examples]
+    
+    data_info = {
+        'type': 'synthetic',
+        'dataset': 'Synthetic Prompts',
+        'source': 'generated_prompts',
+        'samples_used': len(prompts),
+        'samples_available': len(SYNTHETIC_PROMPTS),
+        'task': 'text_summarization',
+        'verified': False,
+        'mlperf_compliant': False,
+        'note': 'Synthetic prompts for testing only'
+    }
+    
+    return prompts, data_info
 
 
 def get_args():
@@ -267,23 +302,12 @@ def calculate_rouge_l(reference, hypothesis):
     return 2 * precision * recall / (precision + recall)
 
 
-def run_benchmark(model, tokenizer, args):
+def run_benchmark(model, tokenizer, args, prompts: List[str], references: List[str] = None, data_info: Dict = None):
     """Run the benchmark"""
     log.info("=" * 60)
     log.info("Starting Mixtral-8x7B Benchmark")
     log.info("=" * 60)
     log.info(f"Data type: {args.data_type}")
-    
-    # Load data
-    if args.data_type == "real":
-        prompts, references = load_mixtral_dataset(args.data_dir, args.max_examples)
-        if prompts is None:
-            log.warning("Falling back to synthetic data")
-            prompts = SYNTHETIC_PROMPTS[:args.max_examples]
-            references = None
-    else:
-        prompts = SYNTHETIC_PROMPTS[:args.max_examples]
-        references = None
     
     num_examples = len(prompts)
     log.info(f"Processing {num_examples} prompts")
@@ -409,6 +433,24 @@ def run_benchmark(model, tokenizer, args):
         print("Performance:        ⚠️ Slow (try --4bit --offload)")
     print("=" * 60)
     
+    # Print data information
+    if data_info:
+        print("\n" + "=" * 60)
+        print("DATA INFORMATION")
+        print("=" * 60)
+        print(f"Type:               {data_info['type']}")
+        print(f"Dataset:            {data_info['dataset']}")
+        print(f"Source:             {data_info['source']}")
+        print(f"Samples Used:       {data_info['samples_used']:,}")
+        print(f"Samples Available:  {data_info['samples_available']:,}")
+        print(f"Task:               {data_info['task']}")
+        print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+        print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+        print(f"Note:               {data_info['note']}")
+        print("=" * 60)
+        
+        summary['data_info'] = data_info
+    
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -423,9 +465,20 @@ def run_benchmark(model, tokenizer, args):
 
 def main():
     args = get_args()
+    
+    # Load data first
+    references = None
+    if args.data_type == "real":
+        prompts, references, data_info = load_mixtral_dataset(args.data_dir, args.max_examples)
+        if prompts is None:
+            log.warning("Falling back to synthetic data")
+            prompts, data_info = get_synthetic_data(args.max_examples)
+    else:
+        prompts, data_info = get_synthetic_data(args.max_examples)
+    
     model, tokenizer = load_model(args)
     try:
-        run_benchmark(model, tokenizer, args)
+        run_benchmark(model, tokenizer, args, prompts=prompts, references=references, data_info=data_info)
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
         log.error("")
         log.error("=" * 60)

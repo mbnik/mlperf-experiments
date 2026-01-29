@@ -51,23 +51,37 @@ IMAGENET_CLASSES = [
 # Data Loading
 # ============================================================================
 
-def generate_synthetic_data(num_samples: int, image_size: int = 224) -> torch.Tensor:
+def generate_synthetic_data(num_samples: int, image_size: int = 224) -> Tuple[torch.Tensor, Dict]:
     """Generate synthetic image data for benchmarking"""
     log.info(f"Generating {num_samples} synthetic images ({image_size}x{image_size})...")
     
     # Generate random normalized images (ImageNet normalization)
     images = torch.randn(num_samples, 3, image_size, image_size)
     
-    return images
+    data_info = {
+        'type': 'synthetic',
+        'dataset': 'Synthetic Images',
+        'source': 'generated',
+        'samples_used': num_samples,
+        'samples_available': num_samples,
+        'verified': False,
+        'mlperf_compliant': False,
+        'note': 'Random tensor data for testing - not MLPerf compliant',
+        'image_size': image_size,
+        'channels': 3,
+        'num_classes': 1000,
+    }
+    
+    return images, data_info
 
 
-def load_imagenet_data(data_dir: str, max_samples: int = None, image_size: int = 224) -> Tuple[torch.Tensor, List[int]]:
+def load_imagenet_data(data_dir: str, max_samples: int = None, image_size: int = 224) -> Tuple[torch.Tensor, List[int], Dict]:
     """Load ImageNet validation data"""
     val_dir = Path(data_dir) / "val"
     
     if not val_dir.exists():
         log.warning(f"ImageNet validation directory not found: {val_dir}")
-        return None, None
+        return None, None, {}
     
     log.info(f"Loading ImageNet data from {val_dir}")
     
@@ -86,6 +100,12 @@ def load_imagenet_data(data_dir: str, max_samples: int = None, image_size: int =
     
     # Load images from subdirectories (each subdir is a class)
     class_dirs = sorted([d for d in val_dir.iterdir() if d.is_dir()])
+    total_available = 0
+    
+    # Count total available first
+    for class_dir in class_dirs:
+        image_files = list(class_dir.glob("*.JPEG")) + list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png"))
+        total_available += len(image_files)
     
     for class_idx, class_dir in enumerate(class_dirs):
         image_files = list(class_dir.glob("*.JPEG")) + list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png"))
@@ -106,10 +126,26 @@ def load_imagenet_data(data_dir: str, max_samples: int = None, image_size: int =
             break
     
     if not images:
-        return None, None
+        return None, None, {}
     
     log.info(f"Loaded {len(images)} images from ImageNet")
-    return torch.stack(images), labels
+    
+    data_info = {
+        'type': 'real',
+        'dataset': 'ImageNet ILSVRC2012',
+        'source': str(val_dir),
+        'samples_used': len(images),
+        'samples_available': total_available,
+        'verified': True,
+        'mlperf_compliant': True,
+        'note': 'ImageNet ILSVRC2012 validation set (50,000 images)',
+        'image_size': image_size,
+        'channels': 3,
+        'num_classes': len(class_dirs),
+        'preprocessing': 'Resize(256) -> CenterCrop(224) -> Normalize(ImageNet)',
+    }
+    
+    return torch.stack(images), labels, data_info
 
 
 # ============================================================================
@@ -196,12 +232,12 @@ def run_benchmark(model, args):
     # Load data
     labels = None
     if args.data_type == "real":
-        images, labels = load_imagenet_data(args.data_dir, args.max_examples, args.image_size)
+        images, labels, data_info = load_imagenet_data(args.data_dir, args.max_examples, args.image_size)
         if images is None:
             log.warning("Falling back to synthetic data")
-            images = generate_synthetic_data(args.max_examples, args.image_size)
+            images, data_info = generate_synthetic_data(args.max_examples, args.image_size)
     else:
-        images = generate_synthetic_data(args.max_examples, args.image_size)
+        images, data_info = generate_synthetic_data(args.max_examples, args.image_size)
     
     num_samples = len(images)
     num_batches = (num_samples + args.batch_size - 1) // args.batch_size
@@ -319,6 +355,25 @@ def run_benchmark(model, args):
     print(f"Performance:        {rating}")
     print("=" * 60)
     
+    # Print DATA INFORMATION section
+    print("\n" + "=" * 60)
+    print("DATA INFORMATION")
+    print("=" * 60)
+    print(f"Type:               {data_info['type']}")
+    print(f"Dataset:            {data_info['dataset']}")
+    print(f"Source:             {data_info['source']}")
+    print(f"Samples Used:       {data_info['samples_used']:,}")
+    print(f"Samples Available:  {data_info['samples_available']:,}")
+    print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+    print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+    print("-" * 40)
+    print(f"Image Size:         {data_info.get('image_size', 224)}x{data_info.get('image_size', 224)}")
+    print(f"Channels:           {data_info.get('channels', 3)}")
+    print(f"Num Classes:        {data_info.get('num_classes', 1000)}")
+    print("-" * 40)
+    print(f"Note: {data_info['note']}")
+    print("=" * 60)
+    
     return {
         'device': args.device,
         'data_type': args.data_type,
@@ -330,7 +385,8 @@ def run_benchmark(model, args):
         'avg_latency_ms': avg_latency,
         'throughput_images_per_sec': throughput,
         'accuracy': accuracy,
-        'batch_times': batch_times[:10]  # Save first 10 for reference
+        'batch_times': batch_times[:10],  # Save first 10 for reference
+        'data_info': data_info,
     }
 
 

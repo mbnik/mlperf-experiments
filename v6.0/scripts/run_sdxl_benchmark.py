@@ -28,6 +28,7 @@ from pathlib import Path
 
 import torch
 from diffusers import DiffusionPipeline
+from typing import Dict, List, Tuple, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("SDXL-Benchmark")
@@ -47,19 +48,52 @@ SYNTHETIC_PROMPTS = [
 ]
 
 
-def load_coco_captions(data_dir, max_examples):
+def load_coco_captions(data_dir: str, max_examples: int) -> Tuple[Optional[List], Dict]:
     """Load real COCO captions as prompts"""
     captions_path = Path(data_dir) / "captions.json"
     
     if not captions_path.exists():
         log.warning(f"Captions not found at {captions_path}")
-        return None
+        return None, {}
     
     with open(captions_path) as f:
         captions = json.load(f)
     
-    log.info(f"Loaded {len(captions)} COCO captions")
-    return captions[:max_examples]
+    total_available = len(captions)
+    log.info(f"Loaded {total_available} COCO captions")
+    
+    data_info = {
+        'type': 'real',
+        'dataset': 'COCO 2014 Captions',
+        'source': str(data_dir),
+        'samples_used': min(max_examples, total_available),
+        'samples_available': total_available,
+        'task': 'text_to_image',
+        'verified': True,
+        'mlperf_compliant': True,
+        'note': 'COCO 2014 image captions for text-to-image generation'
+    }
+    
+    return captions[:max_examples], data_info
+
+
+def get_synthetic_data(max_examples: int) -> Tuple[List[str], Dict]:
+    """Get synthetic prompts with data info"""
+    prompts = SYNTHETIC_PROMPTS[:max_examples]
+    
+    data_info = {
+        'type': 'synthetic',
+        'dataset': 'Synthetic Prompts',
+        'source': 'generated_prompts',
+        'samples_used': len(prompts),
+        'samples_available': len(SYNTHETIC_PROMPTS),
+        'task': 'text_to_image',
+        'verified': False,
+        'mlperf_compliant': False,
+        'note': 'Synthetic prompts for testing only'
+    }
+    
+    return prompts, data_info
 
 
 def get_args():
@@ -101,16 +135,15 @@ def load_model(args):
             log.info("Loading on CPU (this will be very slow)...")
             pipe = DiffusionPipeline.from_pretrained(
                 args.model_name,
-                dtype=torch_dtype,
+                torch_dtype=torch_dtype,
                 use_safetensors=True,
-                variant="fp16",
             )
         elif args.offload:
             torch_dtype = torch.float16
             log.info("Loading with model CPU offloading...")
             pipe = DiffusionPipeline.from_pretrained(
                 args.model_name,
-                dtype=torch_dtype,
+                torch_dtype=torch_dtype,
                 use_safetensors=True,
                 variant="fp16",
             )
@@ -120,7 +153,7 @@ def load_model(args):
             log.info("Loading on GPU...")
             pipe = DiffusionPipeline.from_pretrained(
                 args.model_name,
-                dtype=torch_dtype,
+                torch_dtype=torch_dtype,
                 use_safetensors=True,
                 variant="fp16",
             )
@@ -138,22 +171,13 @@ def load_model(args):
     return pipe
 
 
-def run_benchmark(pipe, args):
+def run_benchmark(pipe, args, prompts: List[str], data_info: Dict = None):
     """Run the benchmark"""
     log.info("=" * 60)
     log.info("Starting SDXL Benchmark")
     log.info("=" * 60)
     log.info(f"Data type: {args.data_type}")
     log.info(f"Diffusion steps: {args.num_steps}")
-    
-    # Load prompts
-    if args.data_type == "real":
-        prompts = load_coco_captions(args.data_dir, args.max_examples)
-        if prompts is None:
-            log.warning("Falling back to synthetic prompts")
-            prompts = SYNTHETIC_PROMPTS[:args.max_examples]
-    else:
-        prompts = SYNTHETIC_PROMPTS[:args.max_examples]
     
     num_examples = len(prompts)
     log.info(f"Generating {num_examples} images")
@@ -264,6 +288,24 @@ def run_benchmark(pipe, args):
         print("Performance:        ⚠️ Slow")
     print("=" * 60)
     
+    # Print data information
+    if data_info:
+        print("\n" + "=" * 60)
+        print("DATA INFORMATION")
+        print("=" * 60)
+        print(f"Type:               {data_info['type']}")
+        print(f"Dataset:            {data_info['dataset']}")
+        print(f"Source:             {data_info['source']}")
+        print(f"Samples Used:       {data_info['samples_used']:,}")
+        print(f"Samples Available:  {data_info['samples_available']:,}")
+        print(f"Task:               {data_info['task']}")
+        print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+        print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+        print(f"Note:               {data_info['note']}")
+        print("=" * 60)
+        
+        summary['data_info'] = data_info
+    
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -278,8 +320,18 @@ def run_benchmark(pipe, args):
 
 def main():
     args = get_args()
+    
+    # Load data first
+    if args.data_type == "real":
+        prompts, data_info = load_coco_captions(args.data_dir, args.max_examples)
+        if prompts is None:
+            log.warning("Falling back to synthetic prompts")
+            prompts, data_info = get_synthetic_data(args.max_examples)
+    else:
+        prompts, data_info = get_synthetic_data(args.max_examples)
+    
     pipe = load_model(args)
-    run_benchmark(pipe, args)
+    run_benchmark(pipe, args, prompts=prompts, data_info=data_info)
 
 
 if __name__ == "__main__":

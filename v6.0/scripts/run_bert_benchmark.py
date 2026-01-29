@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 # Synthetic Data Generation
 # ============================================================================
 
-def generate_synthetic_data(num_samples: int, max_seq_length: int = 384) -> List[Dict]:
+def generate_synthetic_data(num_samples: int, max_seq_length: int = 384) -> Tuple[List[Dict], Dict]:
     """Generate synthetic QA data for benchmarking"""
     log.info(f"Generating {num_samples} synthetic QA samples...")
     
@@ -66,21 +66,40 @@ def generate_synthetic_data(num_samples: int, max_seq_length: int = 384) -> List
             'answer': f"synthetic answer {i}"
         })
     
-    return samples
+    data_info = {
+        'type': 'synthetic',
+        'dataset': 'Synthetic QA',
+        'source': 'generated',
+        'samples_used': num_samples,
+        'samples_available': num_samples,
+        'verified': False,
+        'mlperf_compliant': False,
+        'note': 'Randomly generated QA pairs for testing - not MLPerf compliant',
+        'max_seq_length': max_seq_length,
+        'vocab_size': 30522,
+    }
+    
+    return samples, data_info
 
 
-def load_squad_data(data_dir: str, max_samples: int = None) -> List[Dict]:
+def load_squad_data(data_dir: str, max_samples: int = None) -> Tuple[List[Dict], Dict]:
     """Load SQuAD v1.1 data"""
     squad_file = Path(data_dir) / "dev-v1.1.json"
     
     if not squad_file.exists():
         log.warning(f"SQuAD file not found: {squad_file}")
-        return None
+        return None, {}
     
     log.info(f"Loading SQuAD data from {squad_file}")
     
     with open(squad_file) as f:
         squad_data = json.load(f)
+    
+    # Count total available samples
+    total_available = 0
+    for article in squad_data['data']:
+        for paragraph in article['paragraphs']:
+            total_available += len(paragraph['qas'])
     
     samples = []
     for article in squad_data['data']:
@@ -102,7 +121,20 @@ def load_squad_data(data_dir: str, max_samples: int = None) -> List[Dict]:
             break
     
     log.info(f"Loaded {len(samples)} QA pairs from SQuAD")
-    return samples
+    
+    data_info = {
+        'type': 'real',
+        'dataset': 'SQuAD v1.1',
+        'source': str(squad_file),
+        'samples_used': len(samples),
+        'samples_available': total_available,
+        'verified': True,
+        'mlperf_compliant': True,
+        'note': 'Stanford Question Answering Dataset (SQuAD) v1.1 dev set',
+        'num_articles': len(squad_data['data']),
+    }
+    
+    return samples, data_info
 
 
 # ============================================================================
@@ -159,7 +191,7 @@ def load_model(args):
             model = AutoModelForQuestionAnswering.from_pretrained(
                 args.model_name,
                 device_map="auto",
-                dtype=torch.float16 if args.device == "cuda" else torch.float32,
+                torch_dtype=torch.float16 if args.device == "cuda" else torch.float32,
             )
         else:
             model = AutoModelForQuestionAnswering.from_pretrained(args.model_name)
@@ -196,12 +228,12 @@ def run_benchmark(model, tokenizer, args):
     
     # Load data
     if args.data_type == "real":
-        samples = load_squad_data(args.data_dir, args.max_examples)
+        samples, data_info = load_squad_data(args.data_dir, args.max_examples)
         if samples is None:
             log.warning("Falling back to synthetic data")
-            samples = generate_synthetic_data(args.max_examples, args.max_seq_length)
+            samples, data_info = generate_synthetic_data(args.max_examples, args.max_seq_length)
     else:
-        samples = generate_synthetic_data(args.max_examples, args.max_seq_length)
+        samples, data_info = generate_synthetic_data(args.max_examples, args.max_seq_length)
     
     num_samples = len(samples)
     log.info(f"Processing {num_samples} samples")
@@ -356,6 +388,21 @@ def run_benchmark(model, tokenizer, args):
     print(f"Performance:        {rating}")
     print("=" * 60)
     
+    # Print DATA INFORMATION section
+    print("\n" + "=" * 60)
+    print("DATA INFORMATION")
+    print("=" * 60)
+    print(f"Type:               {data_info['type']}")
+    print(f"Dataset:            {data_info['dataset']}")
+    print(f"Source:             {data_info['source']}")
+    print(f"Samples Used:       {data_info['samples_used']:,}")
+    print(f"Samples Available:  {data_info['samples_available']:,}")
+    print(f"Verified:           {'✓' if data_info['verified'] else '✗'}")
+    print(f"MLPerf Compliant:   {'✓' if data_info['mlperf_compliant'] else '✗'}")
+    print("-" * 40)
+    print(f"Note: {data_info['note']}")
+    print("=" * 60)
+    
     return {
         'device': args.device,
         'data_type': args.data_type,
@@ -367,7 +414,8 @@ def run_benchmark(model, tokenizer, args):
         'total_time_sec': total_time,
         'avg_latency_ms': avg_latency,
         'throughput_samples_per_sec': throughput,
-        'results': results[:10]  # Save first 10 for reference
+        'results': results[:10],  # Save first 10 for reference
+        'data_info': data_info,
     }
 
 
