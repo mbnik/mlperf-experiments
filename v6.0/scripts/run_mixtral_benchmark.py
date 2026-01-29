@@ -47,8 +47,8 @@ SYNTHETIC_PROMPTS = [
 ]
 
 
-def load_openorca(data_dir, max_examples):
-    """Load real OpenOrca dataset"""
+def load_mixtral_dataset(data_dir, max_examples):
+    """Load official MLPerf Mixtral dataset (15K combined: OpenOrca + GSM8k + MBXP)"""
     test_path = Path(data_dir) / "test.json"
     
     if not test_path.exists():
@@ -58,7 +58,7 @@ def load_openorca(data_dir, max_examples):
     with open(test_path) as f:
         data = json.load(f)
     
-    log.info(f"Loaded {len(data)} examples from OpenOrca")
+    log.info(f"Loaded {len(data)} examples from MLPerf Mixtral dataset")
     
     prompts = []
     references = []
@@ -87,7 +87,7 @@ def get_args():
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--data-type", type=str, default="synthetic",
                        choices=["synthetic", "real"])
-    parser.add_argument("--data-dir", type=str, default="data/openorca")
+    parser.add_argument("--data-dir", type=str, default="data/mixtral")
     parser.add_argument("--output-dir", type=str, default="results")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--mlperf", action="store_true",
@@ -161,7 +161,7 @@ def load_model(args):
         
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
-            dtype=torch_dtype,
+            torch_dtype=torch_dtype,
             device_map=device_map,
             quantization_config=quantization_config,
             low_cpu_mem_usage=True,
@@ -217,7 +217,7 @@ def run_benchmark(model, tokenizer, args):
     
     # Load data
     if args.data_type == "real":
-        prompts, references = load_openorca(args.data_dir, args.max_examples)
+        prompts, references = load_mixtral_dataset(args.data_dir, args.max_examples)
         if prompts is None:
             log.warning("Falling back to synthetic data")
             prompts = SYNTHETIC_PROMPTS[:args.max_examples]

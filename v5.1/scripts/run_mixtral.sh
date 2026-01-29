@@ -21,7 +21,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-DATA_DIR="$PROJECT_DIR/data/openorca"
+DATA_DIR="$PROJECT_DIR/data/mixtral"
 
 # Colors
 RED='\033[0;31m'
@@ -62,12 +62,13 @@ print_usage() {
     echo "  Choose either quantization OR offloading, not both."
     echo ""
     echo "MLPerf Compliance:"
-    echo "  --mlperf        Uses max_new_tokens=1024, real OpenOrca data"
+    echo "  --mlperf        Uses max_new_tokens=1024, official 15K combined dataset"
+    echo "                  (OpenOrca + GSM8k + MBXP - 5K samples each)"
     echo "                  Results are comparable to official MLPerf benchmarks"
     echo ""
     echo "Data Options:"
     echo "  synthetic  - Use predefined prompts (fast, no download)"
-    echo "  real       - Use OpenOrca dataset (MLPerf official)"
+    echo "  real       - Use MLPerf 15K combined dataset (OpenOrca+GSM8k+MBXP)"
     echo ""
     echo "Examples:"
     echo "  $0 --4bit --mlperf                # 4-bit quantization (~24GB VRAM)"
@@ -157,7 +158,7 @@ check_existing_data() {
     if $data_exists; then
         echo ""
         echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║             Existing OpenOrca Data Detected                ║${NC}"
+        echo -e "${CYAN}║         Existing MLPerf Mixtral Data Detected              ║${NC}"
         echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "  ${GREEN}✓${NC} Dataset found: ${data_size_str} at $DATA_DIR"
@@ -167,48 +168,123 @@ check_existing_data() {
 }
 
 # ============================================================================
-# Download OpenOrca Dataset
+# Download MLPerf Combined Dataset (OpenOrca + GSM8k + MBXP)
 # ============================================================================
-download_openorca() {
+download_mixtral_dataset() {
     echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║             Downloading OpenOrca Dataset                   ║${NC}"
+    echo -e "${CYAN}║         Downloading MLPerf Mixtral Dataset                 ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${YELLOW}OpenOrca (MLPerf official dataset for Mixtral)${NC}"
-    echo "  - Instruction-following dataset"
-    echo "  - Download via HuggingFace datasets"
+    echo -e "${YELLOW}MLPerf Mixtral Combined Dataset (Official)${NC}"
+    echo "  - 15,000 samples total:"
+    echo "    • 5,000 from OpenOrca (instruction following)"
+    echo "    • 5,000 from GSM8k (math problems)"
+    echo "    • 5,000 from MBXP (code generation)"
+    echo "  - Preprocessed .pkl format"
     echo ""
     
     mkdir -p "$DATA_DIR"
     
+    local pkl_file="${DATA_DIR}/09292024_mixtral_15k_mintoken2_v1.pkl"
+    local dataset_url="https://inference.mlcommons-storage.org/mixtral_8x7b/09292024_mixtral_15k_mintoken2_v1.pkl"
+    
+    if [ ! -f "$pkl_file" ]; then
+        echo -e "${CYAN}Downloading MLPerf combined dataset (~100MB)...${NC}"
+        wget -q --show-progress -O "$pkl_file" "$dataset_url"
+    else
+        echo -e "${GREEN}✓ Dataset already downloaded${NC}"
+    fi
+    
+    # Convert pkl to JSON for our benchmark runner
+    echo -e "${CYAN}Processing dataset...${NC}"
     python3 << PYTHON_EOF
 import os
 import json
-from datasets import load_dataset
+import pickle
 
 data_dir = "$DATA_DIR"
+pkl_path = os.path.join(data_dir, "09292024_mixtral_15k_mintoken2_v1.pkl")
 
-print("Downloading OpenOrca from HuggingFace...")
-# Using a smaller subset for testing
-dataset = load_dataset("Open-Orca/OpenOrca", split="train[:5000]", trust_remote_code=True)
+print(f"Loading MLPerf dataset from {pkl_path}...")
+with open(pkl_path, 'rb') as f:
+    data = pickle.load(f)
 
-# Save as test set
+print(f"Dataset type: {type(data)}")
+if isinstance(data, dict):
+    print(f"Keys: {list(data.keys())}")
+
+# Convert to our format
 test_data = []
-for item in dataset:
-    test_data.append({
-        "question": item.get("question", ""),
-        "response": item.get("response", ""),
-        "system_prompt": item.get("system_prompt", ""),
-    })
+if isinstance(data, list):
+    for item in data:
+        if isinstance(item, dict):
+            test_data.append({
+                "question": item.get("input", item.get("question", item.get("prompt", ""))),
+                "response": item.get("output", item.get("response", item.get("target", ""))),
+                "source": item.get("source", "unknown"),
+            })
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            test_data.append({
+                "question": str(item[0]),
+                "response": str(item[1]),
+                "source": "combined",
+            })
+elif isinstance(data, dict):
+    # Handle dict format
+    if 'input_ids' in data or 'prompts' in data:
+        prompts = data.get('prompts', data.get('input', []))
+        responses = data.get('responses', data.get('output', []))
+        sources = data.get('sources', ['unknown'] * len(prompts))
+        for i, (p, r) in enumerate(zip(prompts, responses)):
+            test_data.append({
+                "question": str(p),
+                "response": str(r),
+                "source": sources[i] if i < len(sources) else "unknown",
+            })
+    else:
+        # Try to iterate items
+        for k, v in data.items():
+            if isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        test_data.append({
+                            "question": item.get("input", item.get("question", "")),
+                            "response": item.get("output", item.get("response", "")),
+                            "source": k,
+                        })
+
+if not test_data:
+    print("Warning: Could not parse dataset, trying pandas...")
+    try:
+        import pandas as pd
+        df = pd.read_pickle(pkl_path)
+        print(f"DataFrame shape: {df.shape}")
+        print(f"Columns: {list(df.columns)}")
+        for idx, row in df.iterrows():
+            test_data.append({
+                "question": str(row.get('input', row.get('prompt', row.iloc[0] if len(row) > 0 else ''))),
+                "response": str(row.get('output', row.get('target', row.iloc[1] if len(row) > 1 else ''))),
+                "source": str(row.get('source', 'combined')),
+            })
+    except Exception as e:
+        print(f"Pandas fallback failed: {e}")
 
 test_path = os.path.join(data_dir, "test.json")
 with open(test_path, 'w') as f:
-    json.dump(test_data, f)
+    json.dump(test_data, f, indent=2)
 
-print(f"✓ Saved {len(test_data)} examples to {test_path}")
+print(f"✓ Processed {len(test_data)} samples")
+print(f"  Saved to: {test_path}")
+
+# Show source distribution
+sources = {}
+for item in test_data:
+    src = item.get('source', 'unknown')
+    sources[src] = sources.get(src, 0) + 1
+print(f"  Source distribution: {sources}")
 PYTHON_EOF
 
-    echo -e "${GREEN}✓ OpenOrca ready!${NC}"
+    echo -e "${GREEN}✓ MLPerf Mixtral dataset ready!${NC}"
 }
 
 # ============================================================================
@@ -218,7 +294,7 @@ PYTHON_EOF
 if [ "$DATA_TYPE" = "real" ]; then
     check_existing_data
     if [ "$SKIP_DOWNLOAD" = false ]; then
-        download_openorca
+        download_mixtral_dataset
     fi
 fi
 
