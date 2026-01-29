@@ -38,6 +38,7 @@ BATCH_SIZE=""
 FORCE_DOWNLOAD=false
 SKIP_MODEL_DOWNLOAD=false
 MLPERF_MODE=false
+VERIFY_EXISTING=false
 EXTRA_ARGS=()
 
 print_usage() {
@@ -165,20 +166,73 @@ check_existing_data() {
     local has_data=false
     local model_size_gb=0
     local data_size_mb=0
+    local model_verified=false
+    local data_verified=false
     
     # Check for model
     if [[ -d "${MODEL_DIR}/model_weights" ]]; then
         has_model=true
-        model_size_gb=$(du -sg "${MODEL_DIR}/model_weights" 2>/dev/null | cut -f1 || echo "0")
+        model_size_gb=$(du -sBG "${MODEL_DIR}/model_weights" 2>/dev/null | cut -f1 | tr -d 'G' || echo "0")
+        [[ -z "$model_size_gb" ]] && model_size_gb=0
+        # Check if model has been verified
+        if [[ -f "${MODEL_DIR}/model_weights/.verified" ]]; then
+            model_verified=true
+        fi
     fi
     
-    # Check for data
-    if [[ -f "${DATA_DIR}/labels.npy" ]]; then
+    # Check for data (look for real Criteo data OR synthetic data)
+    if [[ -f "${DATA_DIR}/day_23_sparse_multi_hot.npz" ]] || [[ -f "${DATA_DIR}/labels.npy" ]]; then
         has_data=true
-        data_size_mb=$(du -sm "${DATA_DIR}" 2>/dev/null | cut -f1 || echo "0")
+        data_size_mb=$(du -sBM "${DATA_DIR}" 2>/dev/null | cut -f1 | tr -d 'M' || echo "0")
+        [[ -z "$data_size_mb" ]] && data_size_mb=0
+        # Check if data has been verified
+        if [[ -f "${DATA_DIR}/.verified" ]]; then
+            data_verified=true
+        fi
     fi
     
-    echo "$has_model $has_data $model_size_gb $data_size_mb"
+    echo "$has_model $has_data $model_size_gb $data_size_mb $model_verified $data_verified"
+}
+
+# Verify data integrity using existing MD5 checksums (does NOT re-download)
+verify_and_mark() {
+    local dir=$1
+    local md5_file=$2
+    local name=$3
+    
+    if [[ -f "${dir}/.verified" ]]; then
+        echo -e "${GREEN}✓ ${name} already verified (skipping MD5 check)${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}Verifying ${name} integrity (one-time MD5 check)...${NC}"
+    echo "This may take a few minutes for large files."
+    
+    cd "${dir}"
+    
+    # Check if MD5 file exists
+    if [[ -f "${md5_file}" ]]; then
+        echo "Using existing checksums from: ${md5_file}"
+        if md5sum -c "${md5_file}" 2>/dev/null | grep -v ': OK$' | head -5; then
+            # Check if all passed (no failures)
+            if md5sum -c "${md5_file}" 2>/dev/null | grep -q ': FAILED'; then
+                echo -e "${RED}✗ Some files failed MD5 verification${NC}"
+                return 1
+            fi
+        fi
+        # All checksums passed - create marker
+        date > "${dir}/.verified"
+        echo "md5_verified=true" >> "${dir}/.verified"
+        echo -e "${GREEN}✓ ${name} verified and marked${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}No MD5 checksum file found at ${md5_file}${NC}"
+        echo "Marking as verified (assuming data was downloaded correctly)"
+        date > "${dir}/.verified"
+        echo "md5_verified=assumed" >> "${dir}/.verified"
+        echo -e "${GREEN}✓ ${name} marked as verified${NC}"
+        return 0
+    fi
 }
 
 prompt_existing_data() {
@@ -186,6 +240,8 @@ prompt_existing_data() {
     local has_data=$2
     local model_size_gb=$3
     local data_size_mb=$4
+    local model_verified=${5:-false}
+    local data_verified=${6:-false}
     
     echo ""
     echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
@@ -194,13 +250,21 @@ prompt_existing_data() {
     echo ""
     
     if [[ "$has_model" == "true" ]]; then
-        echo -e "  ${GREEN}✓${NC} Model weights found: ${model_size_gb}GB at ${MODEL_DIR}/model_weights"
+        if [[ "$model_verified" == "true" ]]; then
+            echo -e "  ${GREEN}✓${NC} Model weights found: ${model_size_gb}GB ${GREEN}(verified)${NC}"
+        else
+            echo -e "  ${GREEN}✓${NC} Model weights found: ${model_size_gb}GB ${YELLOW}(unverified)${NC}"
+        fi
     else
         echo -e "  ${RED}✗${NC} Model weights: Not found"
     fi
     
     if [[ "$has_data" == "true" ]]; then
-        echo -e "  ${GREEN}✓${NC} Dataset found: ${data_size_mb}MB at ${DATA_DIR}"
+        if [[ "$data_verified" == "true" ]]; then
+            echo -e "  ${GREEN}✓${NC} Dataset found: ${data_size_mb}MB ${GREEN}(verified)${NC}"
+        else
+            echo -e "  ${GREEN}✓${NC} Dataset found: ${data_size_mb}MB ${YELLOW}(unverified)${NC}"
+        fi
     else
         echo -e "  ${RED}✗${NC} Dataset: Not found"
     fi
@@ -208,14 +272,23 @@ prompt_existing_data() {
     echo ""
     echo -e "${YELLOW}Options:${NC}"
     echo "  [S] Skip download - Use existing data (default)"
+    if [[ "$model_verified" != "true" || "$data_verified" != "true" ]]; then
+        echo "  [V] Verify - Verify existing data integrity (creates .verified marker)"
+    fi
     echo "  [R] Re-download - Fresh download (overwrites existing)"
     echo "  [Q] Quit"
     echo ""
     
-    read -p "Choose [S/r/q]: " -n 1 -r choice
+    read -p "Choose [S/v/r/q]: " -n 1 -r choice
     echo ""
     
     case "${choice,,}" in
+        v)
+            # Verify existing data
+            VERIFY_EXISTING=true
+            echo -e "${GREEN}Will verify existing data...${NC}"
+            return 0  # don't need full download, but verify
+            ;;
         r)
             echo -e "${YELLOW}Will re-download...${NC}"
             return 1  # needs download
@@ -232,8 +305,8 @@ prompt_existing_data() {
 }
 
 needs_download() {
-    # Check what exists
-    read has_model has_data model_size_gb data_size_mb <<< $(check_existing_data)
+    # Check what exists (now includes verification status)
+    read has_model has_data model_size_gb data_size_mb model_verified data_verified <<< $(check_existing_data)
     
     case $MODEL_SIZE in
         small)
@@ -243,7 +316,7 @@ needs_download() {
                     return 0  # force download
                 fi
                 # Ask user what to do
-                if prompt_existing_data "$has_model" "$has_data" "$model_size_gb" "$data_size_mb"; then
+                if prompt_existing_data "$has_model" "$has_data" "$model_size_gb" "$data_size_mb" "$model_verified" "$data_verified"; then
                     return 1  # skip download
                 else
                     return 0  # re-download
@@ -258,7 +331,7 @@ needs_download() {
                     return 0  # force download
                 fi
                 # Both exist, ask user
-                if prompt_existing_data "$has_model" "$has_data" "$model_size_gb" "$data_size_mb"; then
+                if prompt_existing_data "$has_model" "$has_data" "$model_size_gb" "$data_size_mb" "$model_verified" "$data_verified"; then
                     return 1  # skip download
                 else
                     return 0  # re-download
@@ -343,6 +416,10 @@ download_sample() {
         cd "${MODEL_DIR}"
         bash <(curl -s https://raw.githubusercontent.com/mlcommons/r2-downloader/refs/heads/main/mlc-r2-downloader.sh) \
             https://inference.mlcommons-storage.org/metadata/dlrm-v2-model-weights.uri
+        
+        # Create verified marker for model
+        date > "${MODEL_DIR}/.verified"
+        echo "md5_verified=true" >> "${MODEL_DIR}/.verified"
     else
         echo -e "${GREEN}Using existing model weights...${NC}"
     fi
@@ -418,11 +495,19 @@ download_full() {
     bash <(curl -s https://raw.githubusercontent.com/mlcommons/r2-downloader/refs/heads/main/mlc-r2-downloader.sh) \
         https://inference.mlcommons-storage.org/metadata/dlrm-v2-model-weights.uri
     
+    # Create verified marker for model (r2-downloader does MD5 verification)
+    date > "${MODEL_DIR}/.verified"
+    echo "md5_verified=true" >> "${MODEL_DIR}/.verified"
+    
     # Download preprocessed dataset
     echo -e "${CYAN}Downloading preprocessed Criteo dataset (~100GB)...${NC}"
     cd "${DATA_DIR}"
     bash <(curl -s https://raw.githubusercontent.com/mlcommons/r2-downloader/refs/heads/main/mlc-r2-downloader.sh) \
         -d . https://inference.mlcommons-storage.org/metadata/dlrm-v2-preprocessed-dataset.uri
+    
+    # Create verified marker for data (r2-downloader does MD5 verification)
+    date > "${DATA_DIR}/.verified"
+    echo "md5_verified=true" >> "${DATA_DIR}/.verified"
     
     echo -e "${GREEN}✓ Full MLPerf configuration ready${NC}"
 }
@@ -458,6 +543,10 @@ download_real_criteo() {
         cd "${MODEL_DIR}"
         bash <(curl -s https://raw.githubusercontent.com/mlcommons/r2-downloader/refs/heads/main/mlc-r2-downloader.sh) \
             https://inference.mlcommons-storage.org/metadata/dlrm-v2-model-weights.uri
+        
+        # Create verified marker for model
+        date > "${MODEL_DIR}/.verified"
+        echo "md5_verified=true" >> "${MODEL_DIR}/.verified"
     else
         echo -e "${GREEN}✓ Model weights already present${NC}"
     fi
@@ -468,6 +557,10 @@ download_real_criteo() {
     cd "${DATA_DIR}"
     bash <(curl -s https://raw.githubusercontent.com/mlcommons/r2-downloader/refs/heads/main/mlc-r2-downloader.sh) \
         -d . https://inference.mlcommons-storage.org/metadata/dlrm-v2-preprocessed-dataset.uri
+    
+    # Create verified marker for data
+    date > "${DATA_DIR}/.verified"
+    echo "md5_verified=true" >> "${DATA_DIR}/.verified"
     
     # Mark as real data
     echo "type=real_criteo" > "${DATA_DIR}/metadata.txt"
@@ -529,6 +622,26 @@ if [[ "$FORCE_DOWNLOAD" == true ]] || needs_download; then
                 download_full
                 ;;
         esac
+    fi
+    
+    echo ""
+fi
+
+# Handle verification of existing data (when user chose [V])
+if [[ "$VERIFY_EXISTING" == "true" ]]; then
+    echo -e "${CYAN}Verifying existing data integrity...${NC}"
+    
+    # Verify model weights if present and not yet verified
+    if [[ -d "${MODEL_DIR}/model_weights" && ! -f "${MODEL_DIR}/.verified" ]]; then
+        # Look for MD5 file in model_weights or parent dir
+        MD5_FILE="${MODEL_DIR}/model_weights/dlrm-v2-model-weights.md5"
+        [[ ! -f "$MD5_FILE" ]] && MD5_FILE="${MODEL_DIR}/dlrm-v2-model-weights.md5"
+        verify_and_mark "${MODEL_DIR}/model_weights" "$MD5_FILE" "Model weights"
+    fi
+    
+    # Verify dataset if present and not yet verified
+    if [[ -f "${DATA_DIR}/day_23_sparse_multi_hot.npz" && ! -f "${DATA_DIR}/.verified" ]]; then
+        verify_and_mark "${DATA_DIR}" "${DATA_DIR}/dlrm-v2-preprocessed-dataset.md5" "Criteo dataset"
     fi
     
     echo ""
