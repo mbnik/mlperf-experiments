@@ -48,7 +48,7 @@ SYNTHETIC_PROMPTS = [
 
 
 def load_mixtral_dataset(data_dir, max_examples):
-    """Load official MLPerf Mixtral dataset (15K combined: OpenOrca + GSM8k + MBXP)"""
+    """Load MLPerf combined dataset (OpenOrca + GSM8k + MBXP)"""
     test_path = Path(data_dir) / "test.json"
     
     if not test_path.exists():
@@ -58,13 +58,19 @@ def load_mixtral_dataset(data_dir, max_examples):
     with open(test_path) as f:
         data = json.load(f)
     
-    log.info(f"Loaded {len(data)} examples from MLPerf Mixtral dataset")
+    # Count sources
+    sources = {}
+    for item in data:
+        src = item.get("source", "unknown")
+        sources[src] = sources.get(src, 0) + 1
+    log.info(f"Loaded {len(data)} examples from MLPerf combined dataset")
+    log.info(f"  Source distribution: {sources}")
     
     prompts = []
     references = []
     
     for item in data[:max_examples]:
-        question = item.get("question", item.get("instruction", ""))[:1500]
+        question = item.get("question", item.get("input", item.get("instruction", "")))[:1500]
         prompt = f"[INST] {question} [/INST]"
         prompts.append(prompt)
         references.append(item.get("response", item.get("output", "")))
@@ -83,7 +89,7 @@ def get_args():
     parser.add_argument("--4bit", dest="use_4bit", action="store_true",
                        help="Use 4-bit quantization (~24GB VRAM)")
     parser.add_argument("--8bit", dest="use_8bit", action="store_true",
-                       help="Use 8-bit quantization (~48GB VRAM)")
+                       help="Use 8-bit quantization (~48GB VRAM, or ~16GB with --offload)")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--data-type", type=str, default="synthetic",
                        choices=["synthetic", "real"])
@@ -113,7 +119,39 @@ def load_model(args):
     
     # Determine quantization
     quantization_config = None
-    if args.use_4bit or args.use_8bit:
+    use_8bit_offload = args.use_8bit and args.offload
+    use_4bit_offload = args.use_4bit and args.offload
+    
+    if use_8bit_offload:
+        # 8-bit with CPU offloading workaround
+        try:
+            from transformers import BitsAndBytesConfig
+            log.info("Using 8-bit quantization with CPU offloading")
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True
+            )
+        except ImportError:
+            log.error("bitsandbytes required for quantization. Install with:")
+            log.error("  pip install bitsandbytes")
+            raise SystemExit(1)
+    elif use_4bit_offload:
+        # 4-bit with CPU offloading - experimental, may not work on all GPUs
+        try:
+            from transformers import BitsAndBytesConfig
+            log.info("Using 4-bit quantization with CPU offloading (experimental)")
+            log.warning("Note: 4-bit + offload may fail on GPUs with limited VRAM")
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+        except ImportError:
+            log.error("bitsandbytes required for quantization. Install with:")
+            log.error("  pip install bitsandbytes")
+            raise SystemExit(1)
+    elif args.use_4bit or args.use_8bit:
         try:
             from transformers import BitsAndBytesConfig
             if args.use_4bit:
@@ -139,17 +177,16 @@ def load_model(args):
         device_map = None
         torch_dtype = torch.float32
         log.info("Loading on CPU (this will be VERY slow for Mixtral)...")
-    elif args.offload:
-        # Note: 4-bit/8-bit quantization doesn't work with CPU offloading
-        # We can only offload if NOT using quantization
-        if quantization_config:
-            log.warning("Quantization with offloading not supported by bitsandbytes.")
-            log.warning("Using quantization WITHOUT offloading (requires more VRAM).")
-            device_map = "auto"
-        else:
-            device_map = "auto"
+    elif use_8bit_offload or use_4bit_offload:
+        # Quantization with CPU offloading
+        device_map = "auto"
         torch_dtype = torch.float16
-        log.info("Loading with GPU+CPU offloading...")
+        log.info("Loading with quantization + CPU offloading...")
+    elif args.offload:
+        # FP16 with CPU offloading (no quantization)
+        device_map = "auto"
+        torch_dtype = torch.float16
+        log.info("Loading with GPU+CPU offloading (FP16)...")
     else:
         device_map = {"": 0} if not quantization_config else "auto"
         torch_dtype = torch.float16
@@ -166,19 +203,41 @@ def load_model(args):
             quantization_config=quantization_config,
             low_cpu_mem_usage=True,
         )
-    except torch.cuda.OutOfMemoryError:
-        log.error("=" * 60)
-        log.error("CUDA OUT OF MEMORY!")
-        log.error("=" * 60)
-        log.error("Mixtral-8x7B requires significant VRAM. Try:")
-        log.error("  1. --4bit --offload : 4-bit with CPU offloading (~12GB VRAM)")
-        log.error("  2. --4bit           : 4-bit quantization alone (~24GB VRAM)")
-        log.error("  3. --8bit --offload : 8-bit with offloading (~24GB VRAM)")
-        log.error("  4. --cpu            : Run on CPU only (extremely slow)")
+    except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
+        print_oom_error(args)
         raise SystemExit(1)
+    except ValueError as e:
+        if "CPU or the disk" in str(e) or "enough GPU RAM" in str(e):
+            print_oom_error(args)
+            raise SystemExit(1)
+        raise
     
     log.info("Model loaded successfully!")
     return model, tokenizer
+
+
+def print_oom_error(args):
+    """Print helpful OOM error message with suggestions"""
+    log.error("=" * 60)
+    log.error("CUDA OUT OF MEMORY!")
+    log.error("=" * 60)
+    log.error("Mixtral-8x7B requires significant VRAM.")
+    log.error("")
+    log.error("Current settings:")
+    log.error(f"  --4bit: {args.use_4bit}, --8bit: {args.use_8bit}, --offload: {args.offload}")
+    log.error("")
+    log.error("Try one of these configurations (ordered by VRAM needed):")
+    log.error("")
+    log.error("  1. --offload              : FP16 with full CPU offload (slowest, ~8GB VRAM)")
+    log.error("  2. --8bit --offload       : 8-bit + CPU offload (~16GB VRAM)")
+    log.error("  3. --4bit --offload       : 4-bit + CPU offload (~12GB VRAM, experimental)")
+    log.error("  4. --4bit                 : 4-bit quantization only (~24GB VRAM)")
+    log.error("  5. --8bit                 : 8-bit quantization only (~48GB VRAM)")
+    log.error("  6. --cpu                  : Run on CPU only (extremely slow)")
+    log.error("")
+    log.error("Example:")
+    log.error("  ./scripts/run_mixtral.sh --offload --mlperf")
+    log.error("")
 
 
 def calculate_rouge_l(reference, hypothesis):
@@ -365,7 +424,28 @@ def run_benchmark(model, tokenizer, args):
 def main():
     args = get_args()
     model, tokenizer = load_model(args)
-    run_benchmark(model, tokenizer, args)
+    try:
+        run_benchmark(model, tokenizer, args)
+    except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
+        log.error("")
+        log.error("=" * 60)
+        log.error("CUDA OUT OF MEMORY DURING INFERENCE!")
+        log.error("=" * 60)
+        log.error("Model loaded but ran out of memory during generation.")
+        log.error("")
+        log.error("Current settings:")
+        log.error(f"  --4bit: {args.use_4bit}, --8bit: {args.use_8bit}, --offload: {args.offload}")
+        log.error("")
+        log.error("Your GPU doesn't have enough VRAM for this configuration.")
+        log.error("Try a configuration with lower VRAM requirements:")
+        log.error("")
+        log.error("  1. --offload              : FP16 with full CPU offload (slowest, ~8GB VRAM)")
+        log.error("  2. --cpu                  : Run on CPU only (extremely slow)")
+        log.error("")
+        log.error("Example:")
+        log.error("  ./scripts/run_mixtral.sh --offload --mlperf")
+        log.error("")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

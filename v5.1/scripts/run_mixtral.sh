@@ -49,9 +49,9 @@ print_usage() {
     echo "Options:"
     echo "  --gpu           Run on GPU (requires ~90GB VRAM full, ~48GB 8-bit, ~24GB 4-bit)"
     echo "  --cpu           Run on CPU only (very slow)"
-    echo "  --offload       Use GPU+RAM offloading for limited VRAM (FP16 only)"
-    echo "  --4bit          Use 4-bit quantization (~24GB VRAM)"
-    echo "  --8bit          Use 8-bit quantization (~48GB VRAM)"
+    echo "  --offload       Use GPU+RAM offloading for limited VRAM (FP16 or 8-bit only)"
+    echo "  --4bit          Use 4-bit quantization (~24GB VRAM, no offload support)"
+    echo "  --8bit          Use 8-bit quantization (~48GB VRAM, or ~16GB with --offload)"
     echo "  --data=TYPE     Data type: synthetic, real (default: synthetic)"
     echo "  --samples=N     Number of samples to process (default: 10)"
     echo "  --mlperf        Use official MLPerf settings (auto-downloads real data)"
@@ -332,27 +332,20 @@ echo ""
 # Recommend offload for Mixtral
 if [[ "$USE_OFFLOAD" == "false" && "$QUANTIZATION" == "none" && "$DEVICE" == "cuda" ]]; then
     echo -e "${YELLOW}⚠️  Warning: Mixtral-8x7B requires ~90GB VRAM without quantization${NC}"
-    echo -e "${YELLOW}   Consider using: --4bit or --offload (but not both together)${NC}"
+    echo -e "${YELLOW}   Consider using: --4bit, --8bit, --offload, or combinations${NC}"
     echo ""
 fi
 
-# Check for incompatible combination: quantization + offload
+# Show note for quantization + offload combinations
 if [[ "$USE_OFFLOAD" == "true" && "$QUANTIZATION" != "none" ]]; then
-    echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║  ⚠️  INCOMPATIBLE OPTIONS: --${QUANTIZATION} + --offload   ║${NC}"
-    echo -e "${RED}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${RED}║  bitsandbytes quantization does NOT support CPU offloading ║${NC}"
-    echo -e "${RED}║                                                            ║${NC}"
-    echo -e "${RED}║  Choose ONE of these options:                              ║${NC}"
-    echo -e "${RED}║    --4bit     : 4-bit quantization (~24GB VRAM)            ║${NC}"
-    echo -e "${RED}║    --offload  : FP16 with CPU offloading (slower)          ║${NC}"
-    echo -e "${RED}║                                                            ║${NC}"
-    echo -e "${RED}║  Examples:                                                 ║${NC}"
-    echo -e "${RED}║    $0 --4bit --mlperf                                      ║${NC}"
-    echo -e "${RED}║    $0 --offload --mlperf                                   ║${NC}"
-    echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  Note: --${QUANTIZATION} + --offload may need more VRAM               ║${NC}"
+    echo -e "${YELLOW}╠════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║  This combination works on GPUs with sufficient VRAM.      ║${NC}"
+    echo -e "${YELLOW}║  If you get OOM errors, try:                               ║${NC}"
+    echo -e "${YELLOW}║    --offload only (FP16, slowest but lowest VRAM)          ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    exit 1
 fi
 
 # Build command
@@ -382,14 +375,16 @@ if [ $EXIT_CODE -ne 0 ]; then
         echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
         echo -e "${RED}║  ⚠️  GPU OUT OF MEMORY ERROR                               ║${NC}"
         echo -e "${RED}╠════════════════════════════════════════════════════════════╣${NC}"
-        echo -e "${RED}║  Mixtral-8x7B requires ~90GB VRAM without quantization.    ║${NC}"
+        echo -e "${RED}║  Mixtral-8x7B requires significant VRAM.                   ║${NC}"
         echo -e "${RED}║                                                            ║${NC}"
-        echo -e "${RED}║  Solutions:                                                ║${NC}"
-        echo -e "${RED}║  1. Use --4bit for 4-bit quantization (~26GB VRAM)         ║${NC}"
-        echo -e "${RED}║  2. Use --offload to enable CPU offloading                 ║${NC}"
-        echo -e "${RED}║  3. Combine both: --4bit --offload (lowest VRAM)           ║${NC}"
+        echo -e "${RED}║  Try one of these (ordered by VRAM needed):                ║${NC}"
+        echo -e "${RED}║  1. --offload           : FP16 + CPU offload (~8GB VRAM)   ║${NC}"
+        echo -e "${RED}║  2. --8bit --offload    : 8-bit + CPU offload (~16GB VRAM) ║${NC}"
+        echo -e "${RED}║  3. --4bit --offload    : 4-bit + CPU offload (~12GB VRAM) ║${NC}"
+        echo -e "${RED}║  4. --4bit              : 4-bit quantization (~24GB VRAM)  ║${NC}"
+        echo -e "${RED}║  5. --8bit              : 8-bit quantization (~48GB VRAM)  ║${NC}"
         echo -e "${RED}║                                                            ║${NC}"
-        echo -e "${RED}║  Example: $0 --4bit --offload --mlperf                     ║${NC}"
+        echo -e "${RED}║  Example: $0 --offload --mlperf                            ║${NC}"
         echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
         echo ""
     fi
