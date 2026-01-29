@@ -246,6 +246,34 @@ class DLRMDataset:
 
 
 # ============================================================================
+# Command Builder
+# ============================================================================
+
+def build_command(args) -> str:
+    """Build the command line string for reproducibility"""
+    import sys
+    cmd_parts = [sys.executable, __file__]
+    
+    cmd_parts.extend(["--model-size", args.model_size])
+    if args.model_path:
+        cmd_parts.extend(["--model-path", args.model_path])
+    cmd_parts.extend(["--device", args.device])
+    cmd_parts.extend(["--data-dir", args.data_dir])
+    cmd_parts.extend(["--data-type", args.data_type])
+    if args.max_examples:
+        cmd_parts.extend(["--max-examples", str(args.max_examples)])
+    cmd_parts.extend(["--batch-size", str(args.batch_size)])
+    cmd_parts.extend(["--output-dir", args.output_dir])
+    
+    if args.offload:
+        cmd_parts.append("--offload")
+    if args.mlperf:
+        cmd_parts.append("--mlperf")
+    
+    return " ".join(cmd_parts)
+
+
+# ============================================================================
 # Benchmark Runner
 # ============================================================================
 
@@ -680,6 +708,13 @@ def main():
     
     # Run benchmark
     results = run_benchmark(model, dataset, args, data_info=data_info)
+    
+    # Print command for reproducibility
+    print("\n" + "=" * 60)
+    print("COMMAND")
+    print("=" * 60)
+    print(build_command(args))
+    print("=" * 60)
     
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

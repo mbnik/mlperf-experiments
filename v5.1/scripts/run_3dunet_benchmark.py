@@ -618,6 +618,33 @@ def save_results(results: Dict, output_dir: str, model_size: str, device: str):
 
 
 # ============================================================================
+# Command Builder
+# ============================================================================
+
+def build_command(args) -> str:
+    """Build the command line string for reproducibility"""
+    import sys
+    cmd_parts = [sys.executable, __file__]
+    
+    cmd_parts.extend(["--model-dir", args.model_dir])
+    cmd_parts.extend(["--data-dir", args.data_dir])
+    cmd_parts.extend(["--device", args.device])
+    cmd_parts.extend(["--model-size", args.model_size])
+    if args.batch_size:
+        cmd_parts.extend(["--batch-size", str(args.batch_size)])
+    if args.max_examples:
+        cmd_parts.extend(["--max-examples", str(args.max_examples)])
+    cmd_parts.extend(["--output-dir", args.output_dir])
+    
+    if args.offload:
+        cmd_parts.append("--offload")
+    if args.mlperf:
+        cmd_parts.append("--mlperf")
+    
+    return " ".join(cmd_parts)
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -712,6 +739,13 @@ def main():
     results["input_shape"] = list(config['input_shape'])
     results["mlperf_mode"] = args.mlperf
     results["mlperf_compliant"] = args.mlperf and (data_path / "volumes.npy").exists()
+    
+    # Print command for reproducibility
+    print("\n" + "=" * 60)
+    print("COMMAND")
+    print("=" * 60)
+    print(build_command(args))
+    print("=" * 60)
     
     # Save results
     save_results(results, args.output_dir, args.model_size, device)

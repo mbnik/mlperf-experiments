@@ -43,3 +43,7 @@ Thumbs.db
 
 # Results (large benchmark outputs)
 v*/results/
+
+# Root level models and results
+models/
+results/

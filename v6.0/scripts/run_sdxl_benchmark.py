@@ -96,6 +96,29 @@ def get_synthetic_data(max_examples: int) -> Tuple[List[str], Dict]:
     return prompts, data_info
 
 
+def build_command(args) -> str:
+    """Build the command line string for reproducibility"""
+    import sys
+    cmd_parts = [sys.executable, __file__]
+    
+    cmd_parts.extend(["--model-name", args.model_name])
+    cmd_parts.extend(["--device", args.device])
+    cmd_parts.extend(["--max-examples", str(args.max_examples)])
+    cmd_parts.extend(["--num-steps", str(args.num_steps)])
+    cmd_parts.extend(["--data-type", args.data_type])
+    cmd_parts.extend(["--data-dir", args.data_dir])
+    cmd_parts.extend(["--output-dir", args.output_dir])
+    
+    if args.offload:
+        cmd_parts.append("--offload")
+    if args.save_images:
+        cmd_parts.append("--save-images")
+    if args.mlperf:
+        cmd_parts.append("--mlperf")
+    
+    return " ".join(cmd_parts)
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="SDXL Benchmark with Real/Synthetic Prompts")
     parser.add_argument("--model-name", type=str, 
@@ -305,6 +328,13 @@ def run_benchmark(pipe, args, prompts: List[str], data_info: Dict = None):
         print("=" * 60)
         
         summary['data_info'] = data_info
+    
+    # Print command for reproducibility
+    print("\n" + "=" * 60)
+    print("COMMAND")
+    print("=" * 60)
+    print(build_command(args))
+    print("=" * 60)
     
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)

@@ -645,12 +645,18 @@ if [ "$SKIP_DOWNLOAD" = false ]; then
     esac
 fi
 
+# Detect actual data type based on what Python script will use
+ACTUAL_DATA_TYPE="synthetic"
+if [ -f "$DATA_DIR/images.npy" ]; then
+    ACTUAL_DATA_TYPE="real"
+fi
+
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║              RetinaNet Benchmark Configuration             ║${NC}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo "  Model Size: $MODEL_SIZE"
-echo "  Data Type:  $DATA_TYPE"
+echo "  Data Type:  $ACTUAL_DATA_TYPE"
 echo "  Device:     $DEVICE"
 echo "  Offload:    $USE_OFFLOAD"
 echo "  Data Dir:   $DATA_DIR"

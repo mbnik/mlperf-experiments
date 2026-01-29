@@ -149,6 +149,31 @@ def load_imagenet_data(data_dir: str, max_samples: int = None, image_size: int =
 
 
 # ============================================================================
+# Command Builder
+# ============================================================================
+
+def build_command(args) -> str:
+    """Build the command line string for reproducibility"""
+    import sys
+    cmd_parts = [sys.executable, __file__]
+    
+    cmd_parts.extend(["--device", args.device])
+    cmd_parts.extend(["--max-examples", str(args.max_examples)])
+    cmd_parts.extend(["--batch-size", str(args.batch_size)])
+    cmd_parts.extend(["--image-size", str(args.image_size)])
+    cmd_parts.extend(["--data-type", args.data_type])
+    cmd_parts.extend(["--data-dir", args.data_dir])
+    cmd_parts.extend(["--output-dir", args.output_dir])
+    
+    if args.offload:
+        cmd_parts.append("--offload")
+    if args.mlperf:
+        cmd_parts.append("--mlperf")
+    
+    return " ".join(cmd_parts)
+
+
+# ============================================================================
 # Model Loading
 # ============================================================================
 
@@ -372,6 +397,13 @@ def run_benchmark(model, args):
     print(f"Num Classes:        {data_info.get('num_classes', 1000)}")
     print("-" * 40)
     print(f"Note: {data_info['note']}")
+    print("=" * 60)
+    
+    # Print command for reproducibility
+    print("\n" + "=" * 60)
+    print("COMMAND")
+    print("=" * 60)
+    print(build_command(args))
     print("=" * 60)
     
     return {
