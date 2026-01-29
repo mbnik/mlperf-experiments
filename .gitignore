@@ -47,3 +47,6 @@ v*/results/
 # Root level models and results
 models/
 results/
+
+# Work in progress scripts
+run_all_benchmarks.sh
