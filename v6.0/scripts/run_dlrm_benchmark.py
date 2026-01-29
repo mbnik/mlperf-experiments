@@ -377,10 +377,22 @@ def load_model(args) -> DLRM:
                     log.warning(f"Embedding {i} ended up on {emb.weight.device}, forcing to CPU")
                     model.embedding_tables[i] = emb.cpu()
             
-            # Calculate memory distribution
+            # Calculate memory distribution and store for summary
             mlp_params = sum(p.numel() for p in model.bottom_mlp.parameters()) + \
                         sum(p.numel() for p in model.top_mlp.parameters())
             emb_params = sum(p.numel() for p in model.embedding_tables.parameters())
+            
+            # Store offload info as model attributes for later reporting
+            model._offload_info = {
+                'enabled': True,
+                'mlp_params': mlp_params,
+                'mlp_size_mb': mlp_params * 4 / 1e6,
+                'emb_params': emb_params,
+                'emb_size_gb': emb_params * 4 / 1e9,
+                'gpu_components': ['bottom_mlp', 'top_mlp', 'sigmoid'],
+                'cpu_components': [f'embedding_table_{i} ({size:,} rows)' 
+                                   for i, size in enumerate(config['embedding_sizes'])],
+            }
             
             log.info(f"  - MLP params: {mlp_params:,} ({mlp_params * 4 / 1e6:.1f} MB)")
             log.info(f"  - Embedding params: {emb_params:,} ({emb_params * 4 / 1e9:.1f} GB on CPU)")
@@ -388,10 +400,12 @@ def load_model(args) -> DLRM:
             # Verify GPU memory usage
             if torch.cuda.is_available():
                 gpu_mem = torch.cuda.memory_allocated() / 1e9
+                model._offload_info['gpu_memory_gb'] = gpu_mem
                 log.info(f"  - GPU memory used: {gpu_mem:.2f} GB")
         else:
             log.info("Running on GPU")
             model = model.to("cuda")
+            model._offload_info = {'enabled': False}
     except torch.cuda.OutOfMemoryError:
         log.error("=" * 60)
         log.error("CUDA OUT OF MEMORY!")
@@ -411,6 +425,9 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
     log.info("=" * 60)
     log.info("Starting DLRM Benchmark")
     log.info("=" * 60)
+    
+    # Get offload info if available
+    offload_info = getattr(model, '_offload_info', {'enabled': False})
     
     device = args.device
     
@@ -513,6 +530,7 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
     results = {
         "model_size": args.model_size,
         "device": args.device,
+        "offload_enabled": offload_info.get('enabled', False),
         "data_type": args.data_type,
         "batch_size": args.batch_size,
         "total_samples": total_samples,
@@ -526,12 +544,35 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
         "mlperf_compliant": args.mlperf and args.data_type == "real",
     }
     
+    # Add offload details if enabled
+    if offload_info.get('enabled'):
+        results["offload_details"] = {
+            "gpu_memory_gb": offload_info.get('gpu_memory_gb', 0),
+            "mlp_size_mb": offload_info.get('mlp_size_mb', 0),
+            "embedding_size_gb": offload_info.get('emb_size_gb', 0),
+        }
+    
     # Print summary
     print("\n" + "=" * 60)
     print("DLRM BENCHMARK SUMMARY")
     print("=" * 60)
     print(f"Model Size:         {args.model_size}")
     print(f"Device:             {args.device}")
+    
+    # Show memory distribution when offloading is enabled
+    if offload_info.get('enabled'):
+        print(f"Offload Mode:       ENABLED")
+        print("-" * 40)
+        print("Memory Distribution:")
+        print(f"  🖥️  GPU:")
+        print(f"      - Bottom MLP (dense features)")
+        print(f"      - Top MLP (interaction + output)")
+        print(f"      - Memory: {offload_info.get('gpu_memory_gb', 0):.2f} GB")
+        print(f"  💾 CPU:")
+        print(f"      - 26 Embedding tables ({offload_info.get('emb_params', 0):,} params)")
+        print(f"      - Memory: {offload_info.get('emb_size_gb', 0):.1f} GB")
+        print("-" * 40)
+    
     print(f"Data Type:          {args.data_type}")
     if args.mlperf:
         print(f"MLPerf Mode:        ENABLED")
