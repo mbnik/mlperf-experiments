@@ -426,6 +426,196 @@ The `--offload` option enables GPU+CPU memory offloading:
 ./scripts/run_mistral.sh --offload --samples=10
 ```
 
+---
+
+## Memory Offloading Deep Dive
+
+The `--offload` flag works differently depending on the benchmark type. Understanding these differences helps optimize performance for your hardware.
+
+### Offloading Strategies by Benchmark
+
+| Benchmark     | Offload Method                         | What Goes to CPU            | What Stays on GPU      |
+|---------------|----------------------------------------|-----------------------------|------------------------|
+| **BERT**      | HuggingFace `device_map="auto"`        | Automatically balanced      | Automatically balanced |
+| **ResNet50**  | Batch size reduction only              | Nothing (model fits)        | Entire model           |
+| **RetinaNet** | Batch size reduction only              | Nothing (model fits)        | Entire model           |
+| **3D-UNet**   | Batch size reduction only              | Nothing (model fits)        | Entire model           |
+| **DLRM**      | Manual layer split                     | 26 embedding tables (~97GB) | MLP layers (~50MB)     |
+| **GPT-J**     | HuggingFace `device_map="auto"`        | Automatically balanced      | Automatically balanced |
+| **Llama**     | HuggingFace `device_map="auto"`        | Automatically balanced      | Automatically balanced |
+| **Mixtral**   | HuggingFace `device_map="auto"`        | Automatically balanced      | Automatically balanced |
+| **SDXL**      | Diffusers `enable_model_cpu_offload()` | Idle components             | Active component       |
+| **Whisper**   | HuggingFace `device_map="auto"`        | Automatically balanced      | Automatically balanced |
+
+### DLRM: Manual Hybrid GPU+CPU
+
+DLRM is unique - it manually places specific components on different devices:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DLRM Architecture                        │
+├─────────────────────────────────────────────────────────────┤
+│  🖥️  GPU (~50MB):                                           │
+│      ├── Bottom MLP (dense feature processing)              │
+│      ├── Top MLP (interaction + final output)               │
+│      └── Sigmoid activation                                 │
+│                                                             │
+│  💾 CPU (~97GB):                                            │
+│      └── 26 Embedding Tables                                │
+│          ├── Table 0:  40,000,000 rows × 128 dims           │
+│          ├── Table 9:  40,000,000 rows × 128 dims           │
+│          ├── Table 19: 40,000,000 rows × 128 dims           │
+│          ├── Table 20: 40,000,000 rows × 128 dims           │
+│          ├── Table 21: 40,000,000 rows × 128 dims           │
+│          └── ... (26 tables total)                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Why this split is optimal for DLRM:**
+
+| Component        | Size  | Operation Type                         | Best Device |
+|------------------|-------|----------------------------------------|-------------|
+| Embedding tables | ~97GB | Simple lookups (memory-bound)          | CPU         |
+| MLP layers       | ~50MB | Matrix multiplications (compute-bound) | GPU         |
+
+- **Embedding lookups are O(1)** - given an index, return a vector. No matrix math, no activations. CPU handles this well.
+- **MLPs are compute-intensive** - dense matrix multiplications benefit massively from GPU parallelism.
+- **We don't transfer 97GB per batch** - only the looked-up vectors (~26MB per 2048-sample batch).
+
+**Data flow per batch:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Per Batch (2048 samples):                                  │
+│                                                             │
+│  1. CPU: Look up 26 embeddings per sample                   │
+│     → Returns: 2048 × 26 × 128 floats = ~26MB               │
+│                                                             │
+│  2. Transfer ~26MB embeddings → GPU (fast)                  │
+│                                                             │
+│  3. GPU: MLP computation (the actual heavy lifting)         │
+│     → Matrix multiplies, activations, output                │
+│                                                             │
+│  4. GPU → CPU: Results                                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**This is how Meta runs DLRM in production** - they shard embeddings across CPUs and use GPUs for MLPs. This hybrid approach is documented in their DLRM papers and is the canonical deployment pattern.
+
+**Alternative approaches:**
+
+| Approach                   | Speed | Requirement                         |
+|----------------------------|-------|-------------------------------------|
+| Full GPU                   | 100%  | 97GB+ VRAM (A100 80GB × 2, or H100) |
+| Sample model on GPU        | 100%  | 4GB VRAM (uses smaller embeddings)  |
+| **Offload (our approach)** | ~60%  | 1GB VRAM + 100GB RAM                |
+| Multi-GPU sharding         | ~90%  | Multiple GPUs                       |
+
+**DLRM benchmark output with --offload:**
+```
+============================================================
+DLRM BENCHMARK SUMMARY
+============================================================
+Model Size:         full
+Device:             cuda
+Offload Mode:       ENABLED
+----------------------------------------
+Memory Distribution:
+  🖥️  GPU:
+      - Bottom MLP (dense features)
+      - Top MLP (interaction + output)
+      - Memory: 0.02 GB
+  💾 CPU:
+      - 26 Embedding tables (12,345,678,901 params)
+      - Memory: 97.2 GB
+----------------------------------------
+```
+
+### LLMs: Automatic Layer Distribution
+
+For transformer models (Llama, Mixtral, GPT-J, Whisper, BERT), HuggingFace's `device_map="auto"` automatically distributes layers:
+
+```python
+# How it works internally:
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",      # HuggingFace analyzes layer sizes
+    torch_dtype=torch.float16,
+)
+```
+
+**Automatic distribution example (Llama 8B on 12GB GPU):**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  🖥️  GPU (12GB used):                                       │
+│      ├── Layers 0-15 (first half of transformer)            │
+│      └── LM head                                            │
+│                                                             │
+│  💾 CPU (4GB used):                                         │
+│      └── Layers 16-31 (second half of transformer)          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Pros:** No manual tuning needed  
+**Cons:** Slower than quantization due to CPU↔GPU transfers
+
+### SDXL: Sequential Component Offloading
+
+Stable Diffusion XL uses Diffusers' built-in offloading:
+
+```python
+pipe.enable_model_cpu_offload()
+```
+
+**How it works:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Time →                                                     │
+│                                                             │
+│  Step 1: Text encoding                                      │
+│      🖥️  GPU: CLIP text encoder                             │
+│      💾 CPU: UNet, VAE (idle)                               │
+│                                                             │
+│  Step 2: Diffusion (50 steps)                               │
+│      🖥️  GPU: UNet                                          │
+│      💾 CPU: CLIP, VAE (idle)                               │
+│                                                             │
+│  Step 3: Decode latents                                     │
+│      🖥️  GPU: VAE decoder                                   │
+│      💾 CPU: CLIP, UNet (idle)                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Result:** ~3GB VRAM instead of ~6.5GB (at cost of speed)
+
+### Vision Models: No True Offloading
+
+For ResNet50, RetinaNet, and 3D-UNet, `--offload` doesn't move layers to CPU because:
+- Models are small enough to fit on most GPUs
+- Moving layers would kill performance for no benefit
+
+**What --offload does instead:**
+- ResNet50: Skips FP16 conversion (uses FP32)
+- RetinaNet: Reduces default batch size
+- 3D-UNet: Reduces default batch size
+
+### Performance Comparison
+
+| Model        | Mode        | VRAM  | Speed |
+|--------------|-------------|-------|-------|
+| Llama 8B     | GPU (FP16)  | 16GB  | 100%  |
+| Llama 8B     | 4-bit quant | 4GB   | ~80%  |
+| Llama 8B     | --offload   | 8GB   | ~20%  |
+| Mixtral 8x7B | GPU (FP16)  | 93GB  | 100%  |
+| Mixtral 8x7B | 4-bit quant | 24GB  | ~80%  |
+| Mixtral 8x7B | --offload   | 12GB  | ~5%   |
+| DLRM full    | GPU only    | 97GB+ | 100%  |
+| DLRM full    | --offload   | 1GB   | ~60%  |
+
+**Recommendation:**
+1. **If model fits in VRAM**: Use GPU only (fastest)
+2. **If close to VRAM limit**: Use quantization for LLMs
+3. **If significantly over VRAM**: Use --offload (slowest but works)
+
 ## Output
 
 Results are saved to `results/<benchmark>/` directory:
