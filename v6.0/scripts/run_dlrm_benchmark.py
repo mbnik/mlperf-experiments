@@ -307,6 +307,25 @@ def load_model(args) -> DLRM:
         log.error("  2. Install CUDA and GPU drivers")
         raise SystemExit(1)
     
+    # For large models, check if we have enough memory
+    if args.model_size in ["sample", "full"] and args.device == "cuda" and not args.offload:
+        # Estimate model size
+        emb_params = sum(config["embedding_sizes"]) * config["embedding_dim"]
+        emb_size_gb = emb_params * 4 / 1e9  # float32
+        
+        if torch.cuda.is_available():
+            gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            if emb_size_gb > gpu_mem_gb * 0.8:  # Leave 20% margin
+                log.error("=" * 60)
+                log.error("MODEL TOO LARGE FOR GPU!")
+                log.error("=" * 60)
+                log.error(f"Model embeddings need ~{emb_size_gb:.1f} GB")
+                log.error(f"GPU has {gpu_mem_gb:.1f} GB total")
+                log.error("")
+                log.error("Use --offload to keep embeddings on CPU:")
+                log.error(f"  ./scripts/run_benchmark.sh dlrm --mlperf --offload")
+                raise SystemExit(1)
+    
     # Determine if we need CPU offloading for embeddings
     use_cpu_embedding = args.offload
     
@@ -335,13 +354,28 @@ def load_model(args) -> DLRM:
             log.info("  - MLP layers on GPU")
             log.info("  - Embedding tables on CPU (large memory)")
             
-            # Move MLPs to GPU
+            # Clear any existing CUDA cache first
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+            
+            # IMPORTANT: Ensure embeddings stay on CPU FIRST
+            # (they should already be on CPU from creation)
+            for i, emb in enumerate(model.embedding_tables):
+                if emb.weight.device.type != 'cpu':
+                    model.embedding_tables[i] = emb.cpu()
+            
+            # Now move only MLPs to GPU
             model.bottom_mlp = model.bottom_mlp.to("cuda")
             model.top_mlp = model.top_mlp.to("cuda")
+            model.sigmoid = model.sigmoid.to("cuda")
             
-            # Keep embeddings on CPU
-            for emb in model.embedding_tables:
-                emb = emb.to("cpu")
+            # Verify embeddings are still on CPU
+            for i, emb in enumerate(model.embedding_tables):
+                if emb.weight.device.type != 'cpu':
+                    log.warning(f"Embedding {i} ended up on {emb.weight.device}, forcing to CPU")
+                    model.embedding_tables[i] = emb.cpu()
             
             # Calculate memory distribution
             mlp_params = sum(p.numel() for p in model.bottom_mlp.parameters()) + \
@@ -349,7 +383,12 @@ def load_model(args) -> DLRM:
             emb_params = sum(p.numel() for p in model.embedding_tables.parameters())
             
             log.info(f"  - MLP params: {mlp_params:,} ({mlp_params * 4 / 1e6:.1f} MB)")
-            log.info(f"  - Embedding params: {emb_params:,} ({emb_params * 4 / 1e9:.1f} GB)")
+            log.info(f"  - Embedding params: {emb_params:,} ({emb_params * 4 / 1e9:.1f} GB on CPU)")
+            
+            # Verify GPU memory usage
+            if torch.cuda.is_available():
+                gpu_mem = torch.cuda.memory_allocated() / 1e9
+                log.info(f"  - GPU memory used: {gpu_mem:.2f} GB")
         else:
             log.info("Running on GPU")
             model = model.to("cuda")
@@ -382,14 +421,37 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args) -> Dict:
     log.info(f"Batch size: {args.batch_size}")
     log.info(f"Number of batches: {num_batches}")
     
-    # Warmup
+    # Safety check: ensure embeddings are on correct device before starting
+    if args.offload:
+        for i, emb in enumerate(model.embedding_tables):
+            if emb.weight.device.type != 'cpu':
+                log.error(f"ERROR: Embedding table {i} is on {emb.weight.device}, expected CPU!")
+                log.error("This could cause GPU memory issues. Aborting.")
+                raise SystemExit(1)
+    
+    # Warmup with error handling
     log.info(f"\nWarmup ({args.warmup_batches} batches)...")
-    with torch.no_grad():
-        for i in range(min(args.warmup_batches, num_batches)):
-            labels, dense, sparse = dataset.get_batch(i * args.batch_size, args.batch_size)
-            dense = dense.to(device)
-            sparse = sparse.to(device) if not args.offload else sparse
-            _ = model(dense, sparse)
+    try:
+        with torch.no_grad():
+            for i in range(min(args.warmup_batches, num_batches)):
+                labels, dense, sparse = dataset.get_batch(i * args.batch_size, args.batch_size)
+                dense = dense.to(device)
+                sparse = sparse.to(device) if not args.offload else sparse
+                _ = model(dense, sparse)
+                
+                # Clear GPU cache periodically during warmup
+                if device == "cuda" and i % 5 == 0:
+                    torch.cuda.empty_cache()
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+        if "out of memory" in str(e).lower() or "CUDA" in str(e):
+            log.error("=" * 60)
+            log.error("GPU OUT OF MEMORY DURING WARMUP!")
+            log.error("=" * 60)
+            log.error("Try: --offload or --batch-size 512")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            raise SystemExit(1)
+        raise
     
     if device == "cuda":
         torch.cuda.synchronize()
