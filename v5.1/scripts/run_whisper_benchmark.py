@@ -19,7 +19,11 @@ to the original author.
 """
 
 import argparse
+import atexit
+import gc
 import os
+import signal
+import sys
 import time
 import json
 import logging
@@ -33,6 +37,48 @@ from typing import Dict, List, Tuple, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("Whisper-Benchmark")
+
+
+# ============================================================================
+# GPU Cleanup Utilities
+# ============================================================================
+
+_pipeline_ref = None  # Global reference for cleanup
+
+
+def cleanup_gpu():
+    """Properly cleanup GPU resources to prevent device unavailability issues."""
+    global _pipeline_ref
+    
+    log.info("Cleaning up GPU resources...")
+    
+    if _pipeline_ref is not None:
+        del _pipeline_ref
+        _pipeline_ref = None
+    
+    gc.collect()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        log.info(f"GPU cleanup complete. Memory: {allocated:.1f}MB allocated")
+    
+    gc.collect()
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    log.warning(f"Received signal {signum}, cleaning up...")
+    cleanup_gpu()
+    sys.exit(1)
+
+
+# Register cleanup handlers
+atexit.register(cleanup_gpu)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 def generate_test_audio(duration=5.0, sample_rate=16000):
@@ -378,6 +424,8 @@ def run_benchmark(pipe, args, samples: List[np.ndarray], references: List[str] =
 
 
 def main():
+    global _pipeline_ref
+    
     args = get_args()
     
     # Install soundfile if using real data
@@ -389,18 +437,24 @@ def main():
             import subprocess
             subprocess.run(["pip", "install", "-q", "soundfile"], check=True)
     
-    # Load data first
-    references = None
-    if args.data_type == "real":
-        samples, references, data_info = load_librispeech_samples(args.data_dir, args.max_examples)
-        if samples is None:
-            log.warning("Falling back to synthetic data")
+    try:
+        # Load data first
+        references = None
+        if args.data_type == "real":
+            samples, references, data_info = load_librispeech_samples(args.data_dir, args.max_examples)
+            if samples is None:
+                log.warning("Falling back to synthetic data")
+                samples, data_info = get_synthetic_data(args.max_examples)
+        else:
             samples, data_info = get_synthetic_data(args.max_examples)
-    else:
-        samples, data_info = get_synthetic_data(args.max_examples)
+        
+        pipe, _ = load_model(args)
+        _pipeline_ref = pipe
+        
+        run_benchmark(pipe, args, samples=samples, references=references, data_info=data_info)
     
-    pipe, _ = load_model(args)
-    run_benchmark(pipe, args, samples=samples, references=references, data_info=data_info)
+    finally:
+        cleanup_gpu()
 
 
 if __name__ == "__main__":

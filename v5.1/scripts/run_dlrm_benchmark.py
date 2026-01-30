@@ -19,7 +19,10 @@ to the original author.
 """
 
 import argparse
+import atexit
+import gc
 import os
+import signal
 import sys
 import time
 import json
@@ -33,6 +36,48 @@ import torch.nn as nn
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("DLRM-Benchmark")
+
+
+# ============================================================================
+# GPU Cleanup Utilities
+# ============================================================================
+
+_model_ref = None  # Global reference for cleanup
+
+
+def cleanup_gpu():
+    """Properly cleanup GPU resources to prevent device unavailability issues."""
+    global _model_ref
+    
+    log.info("Cleaning up GPU resources...")
+    
+    if _model_ref is not None:
+        del _model_ref
+        _model_ref = None
+    
+    gc.collect()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        log.info(f"GPU cleanup complete. Memory: {allocated:.1f}MB allocated")
+    
+    gc.collect()
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    log.warning(f"Received signal {signum}, cleaning up...")
+    cleanup_gpu()
+    sys.exit(1)
+
+
+# Register cleanup handlers
+atexit.register(cleanup_gpu)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 # ============================================================================
@@ -685,6 +730,8 @@ def run_benchmark(model: DLRM, dataset: DLRMDataset, args, data_info: Dict = Non
 
 
 def main():
+    global _model_ref
+    
     args = get_args()
     
     # Create output directory
@@ -697,37 +744,42 @@ def main():
         log.error("Run: ./scripts/download_dlrm.sh --all --size small")
         sys.exit(1)
     
-    # Load dataset
-    dataset = DLRMDataset(args.data_dir, args.max_examples)
+    try:
+        # Load dataset
+        dataset = DLRMDataset(args.data_dir, args.max_examples)
+        
+        # Get data info
+        data_info = dataset.get_data_info()
+        
+        # Load model
+        model = load_model(args)
+        _model_ref = model
+        
+        # Run benchmark
+        results = run_benchmark(model, dataset, args, data_info=data_info)
+        
+        # Print command for reproducibility
+        print("\n" + "=" * 60)
+        print("COMMAND")
+        print("=" * 60)
+        print(build_command(args))
+        print("=" * 60)
+        
+        # Save results
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_file = os.path.join(output_dir, f"dlrm_benchmark_{args.model_size}_{args.device}_{timestamp}.json")
+        
+        with open(result_file, "w") as f:
+            json.dump({
+                "summary": results,
+                "timestamp": datetime.now().isoformat(),
+                "args": vars(args),
+            }, f, indent=2)
+        
+        log.info(f"\nResults saved to: {result_file}")
     
-    # Get data info
-    data_info = dataset.get_data_info()
-    
-    # Load model
-    model = load_model(args)
-    
-    # Run benchmark
-    results = run_benchmark(model, dataset, args, data_info=data_info)
-    
-    # Print command for reproducibility
-    print("\n" + "=" * 60)
-    print("COMMAND")
-    print("=" * 60)
-    print(build_command(args))
-    print("=" * 60)
-    
-    # Save results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_file = os.path.join(output_dir, f"dlrm_benchmark_{args.model_size}_{args.device}_{timestamp}.json")
-    
-    with open(result_file, "w") as f:
-        json.dump({
-            "summary": results,
-            "timestamp": datetime.now().isoformat(),
-            "args": vars(args),
-        }, f, indent=2)
-    
-    log.info(f"\nResults saved to: {result_file}")
+    finally:
+        cleanup_gpu()
 
 
 if __name__ == "__main__":

@@ -19,9 +19,12 @@ to the original author.
 """
 
 import argparse
+import atexit
+import gc
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from datetime import datetime
@@ -40,6 +43,48 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 log = logging.getLogger(__name__)
+
+
+# ============================================================================
+# GPU Cleanup Utilities
+# ============================================================================
+
+_model_ref = None
+
+
+def cleanup_gpu():
+    """Properly cleanup GPU resources to prevent device unavailability issues."""
+    global _model_ref
+    
+    log.info("Cleaning up GPU resources...")
+    
+    if _model_ref is not None:
+        del _model_ref
+        _model_ref = None
+    
+    gc.collect()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        log.info(f"GPU cleanup complete. Memory: {allocated:.1f}MB allocated")
+    
+    gc.collect()
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    log.warning(f"Received signal {signum}, cleaning up...")
+    cleanup_gpu()
+    sys.exit(1)
+
+
+# Register cleanup handlers
+atexit.register(cleanup_gpu)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 # ============================================================================
@@ -436,6 +481,8 @@ def build_command(args) -> str:
 # ============================================================================
 
 def main():
+    global _model_ref
+    
     parser = argparse.ArgumentParser(description="RetinaNet Object Detection Benchmark")
     parser.add_argument("--model-dir", type=str, default="models/retinanet",
                        help="Directory containing model weights")
@@ -493,46 +540,51 @@ def main():
     
     log.info(f"Configuration: {args.model_size}, device={device}, batch_size={args.batch_size}")
     
-    # Load model
-    model = load_model(args.model_dir, device)
+    try:
+        # Load model
+        model = load_model(args.model_dir, device)
+        _model_ref = model
+        
+        # Load or generate dataset
+        data_path = Path(args.data_dir)
+        if (data_path / "images.npy").exists():
+            log.info(f"Loading data from {args.data_dir}")
+            dataset = SyntheticImageDataset(args.data_dir, max_samples=args.max_examples)
+        else:
+            log.info(f"Data not found, generating {args.max_examples} synthetic images on-the-fly")
+            dataset = GeneratedImageDataset(num_samples=args.max_examples)
+        
+        # Get data info
+        data_info = dataset.get_data_info()
+        
+        # Run benchmark
+        results = run_benchmark(
+            model=model,
+            dataset=dataset,
+            device=device,
+            batch_size=args.batch_size,
+            mlperf_mode=args.mlperf,
+            data_info=data_info
+        )
+        
+        # Add configuration to results
+        results["model_size"] = args.model_size
+        results["data_dir"] = args.data_dir
+        results["mlperf_mode"] = args.mlperf
+        results["mlperf_compliant"] = args.mlperf and (data_path / "images.npy").exists()
+        
+        # Print command for reproducibility
+        print("\n" + "=" * 60)
+        print("COMMAND")
+        print("=" * 60)
+        print(build_command(args))
+        print("=" * 60)
+        
+        # Save results
+        save_results(results, args.output_dir, args.model_size, device)
     
-    # Load or generate dataset
-    data_path = Path(args.data_dir)
-    if (data_path / "images.npy").exists():
-        log.info(f"Loading data from {args.data_dir}")
-        dataset = SyntheticImageDataset(args.data_dir, max_samples=args.max_examples)
-    else:
-        log.info(f"Data not found, generating {args.max_examples} synthetic images on-the-fly")
-        dataset = GeneratedImageDataset(num_samples=args.max_examples)
-    
-    # Get data info
-    data_info = dataset.get_data_info()
-    
-    # Run benchmark
-    results = run_benchmark(
-        model=model,
-        dataset=dataset,
-        device=device,
-        batch_size=args.batch_size,
-        mlperf_mode=args.mlperf,
-        data_info=data_info
-    )
-    
-    # Add configuration to results
-    results["model_size"] = args.model_size
-    results["data_dir"] = args.data_dir
-    results["mlperf_mode"] = args.mlperf
-    results["mlperf_compliant"] = args.mlperf and (data_path / "images.npy").exists()
-    
-    # Print command for reproducibility
-    print("\n" + "=" * 60)
-    print("COMMAND")
-    print("=" * 60)
-    print(build_command(args))
-    print("=" * 60)
-    
-    # Save results
-    save_results(results, args.output_dir, args.model_size, device)
+    finally:
+        cleanup_gpu()
 
 
 if __name__ == "__main__":

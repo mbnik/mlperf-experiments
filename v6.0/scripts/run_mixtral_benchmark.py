@@ -19,7 +19,11 @@ to the original author.
 """
 
 import argparse
+import atexit
+import gc
 import os
+import signal
+import sys
 import time
 import json
 import logging
@@ -32,6 +36,53 @@ from typing import Dict, List, Tuple, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("Mixtral-Benchmark")
+
+
+# ============================================================================
+# GPU Cleanup Utilities
+# ============================================================================
+
+_model_ref = None
+_tokenizer_ref = None
+
+
+def cleanup_gpu():
+    """Properly cleanup GPU resources to prevent device unavailability issues."""
+    global _model_ref, _tokenizer_ref
+    
+    log.info("Cleaning up GPU resources...")
+    
+    if _model_ref is not None:
+        del _model_ref
+        _model_ref = None
+    
+    if _tokenizer_ref is not None:
+        del _tokenizer_ref
+        _tokenizer_ref = None
+    
+    gc.collect()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        log.info(f"GPU cleanup complete. Memory: {allocated:.1f}MB allocated")
+    
+    gc.collect()
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    log.warning(f"Received signal {signum}, cleaning up...")
+    cleanup_gpu()
+    sys.exit(1)
+
+
+# Register cleanup handlers
+atexit.register(cleanup_gpu)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # Synthetic prompts for testing (MLPerf uses OpenOrca, MBXP, GSM8K datasets)
 SYNTHETIC_PROMPTS = [
@@ -496,41 +547,50 @@ def run_benchmark(model, tokenizer, args, prompts: List[str], references: List[s
 
 
 def main():
+    global _model_ref, _tokenizer_ref
+    
     args = get_args()
     
-    # Load data first
-    references = None
-    if args.data_type == "real":
-        prompts, references, data_info = load_mixtral_dataset(args.data_dir, args.max_examples)
-        if prompts is None:
-            log.warning("Falling back to synthetic data")
-            prompts, data_info = get_synthetic_data(args.max_examples)
-    else:
-        prompts, data_info = get_synthetic_data(args.max_examples)
-    
-    model, tokenizer = load_model(args)
     try:
-        run_benchmark(model, tokenizer, args, prompts=prompts, references=references, data_info=data_info)
-    except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
-        log.error("")
-        log.error("=" * 60)
-        log.error("CUDA OUT OF MEMORY DURING INFERENCE!")
-        log.error("=" * 60)
-        log.error("Model loaded but ran out of memory during generation.")
-        log.error("")
-        log.error("Current settings:")
-        log.error(f"  --4bit: {args.use_4bit}, --8bit: {args.use_8bit}, --offload: {args.offload}")
-        log.error("")
-        log.error("Your GPU doesn't have enough VRAM for this configuration.")
-        log.error("Try a configuration with lower VRAM requirements:")
-        log.error("")
-        log.error("  1. --offload              : FP16 with full CPU offload (slowest, ~8GB VRAM)")
-        log.error("  2. --cpu                  : Run on CPU only (extremely slow)")
-        log.error("")
-        log.error("Example:")
-        log.error("  ./scripts/run_mixtral.sh --offload --mlperf")
-        log.error("")
-        raise SystemExit(1)
+        # Load data first
+        references = None
+        if args.data_type == "real":
+            prompts, references, data_info = load_mixtral_dataset(args.data_dir, args.max_examples)
+            if prompts is None:
+                log.warning("Falling back to synthetic data")
+                prompts, data_info = get_synthetic_data(args.max_examples)
+        else:
+            prompts, data_info = get_synthetic_data(args.max_examples)
+        
+        model, tokenizer = load_model(args)
+        _model_ref = model
+        _tokenizer_ref = tokenizer
+        
+        try:
+            run_benchmark(model, tokenizer, args, prompts=prompts, references=references, data_info=data_info)
+        except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
+            log.error("")
+            log.error("=" * 60)
+            log.error("CUDA OUT OF MEMORY DURING INFERENCE!")
+            log.error("=" * 60)
+            log.error("Model loaded but ran out of memory during generation.")
+            log.error("")
+            log.error("Current settings:")
+            log.error(f"  --4bit: {args.use_4bit}, --8bit: {args.use_8bit}, --offload: {args.offload}")
+            log.error("")
+            log.error("Your GPU doesn't have enough VRAM for this configuration.")
+            log.error("Try a configuration with lower VRAM requirements:")
+            log.error("")
+            log.error("  1. --offload              : FP16 with full CPU offload (slowest, ~8GB VRAM)")
+            log.error("  2. --cpu                  : Run on CPU only (extremely slow)")
+            log.error("")
+            log.error("Example:")
+            log.error("  ./scripts/run_mixtral.sh --offload --mlperf")
+            log.error("")
+            raise SystemExit(1)
+    
+    finally:
+        cleanup_gpu()
 
 
 if __name__ == "__main__":

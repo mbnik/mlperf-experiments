@@ -19,7 +19,11 @@ to the original author.
 """
 
 import argparse
+import atexit
+import gc
 import os
+import signal
+import sys
 import time
 import json
 import logging
@@ -32,6 +36,48 @@ from typing import Dict, List, Tuple, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger("SDXL-Benchmark")
+
+
+# ============================================================================
+# GPU Cleanup Utilities
+# ============================================================================
+
+_pipeline_ref = None
+
+
+def cleanup_gpu():
+    """Properly cleanup GPU resources to prevent device unavailability issues."""
+    global _pipeline_ref
+    
+    log.info("Cleaning up GPU resources...")
+    
+    if _pipeline_ref is not None:
+        del _pipeline_ref
+        _pipeline_ref = None
+    
+    gc.collect()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        log.info(f"GPU cleanup complete. Memory: {allocated:.1f}MB allocated")
+    
+    gc.collect()
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    log.warning(f"Received signal {signum}, cleaning up...")
+    cleanup_gpu()
+    sys.exit(1)
+
+
+# Register cleanup handlers
+atexit.register(cleanup_gpu)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # Synthetic prompts for testing
 SYNTHETIC_PROMPTS = [
@@ -349,19 +395,27 @@ def run_benchmark(pipe, args, prompts: List[str], data_info: Dict = None):
 
 
 def main():
+    global _pipeline_ref
+    
     args = get_args()
     
-    # Load data first
-    if args.data_type == "real":
-        prompts, data_info = load_coco_captions(args.data_dir, args.max_examples)
-        if prompts is None:
-            log.warning("Falling back to synthetic prompts")
+    try:
+        # Load data first
+        if args.data_type == "real":
+            prompts, data_info = load_coco_captions(args.data_dir, args.max_examples)
+            if prompts is None:
+                log.warning("Falling back to synthetic prompts")
+                prompts, data_info = get_synthetic_data(args.max_examples)
+        else:
             prompts, data_info = get_synthetic_data(args.max_examples)
-    else:
-        prompts, data_info = get_synthetic_data(args.max_examples)
+        
+        pipe = load_model(args)
+        _pipeline_ref = pipe
+        
+        run_benchmark(pipe, args, prompts=prompts, data_info=data_info)
     
-    pipe = load_model(args)
-    run_benchmark(pipe, args, prompts=prompts, data_info=data_info)
+    finally:
+        cleanup_gpu()
 
 
 if __name__ == "__main__":

@@ -19,9 +19,13 @@ to the original author.
 """
 
 import argparse
+import atexit
+import gc
 import json
 import logging
 import os
+import signal
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +39,67 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 log = logging.getLogger(__name__)
+
+
+# ============================================================================
+# GPU Cleanup Utilities
+# ============================================================================
+
+_model_ref = None  # Global reference for cleanup
+_tokenizer_ref = None
+
+
+def cleanup_gpu():
+    """Properly cleanup GPU resources to prevent device unavailability issues.
+    
+    This is critical for A100 and other datacenter GPUs which have stricter
+    resource management. Without proper cleanup, CUDA contexts may not be
+    fully released, potentially requiring a server reboot.
+    """
+    global _model_ref, _tokenizer_ref
+    
+    log.info("Cleaning up GPU resources...")
+    
+    # Delete model references
+    if _model_ref is not None:
+        del _model_ref
+        _model_ref = None
+    
+    if _tokenizer_ref is not None:
+        del _tokenizer_ref
+        _tokenizer_ref = None
+    
+    # Force garbage collection
+    gc.collect()
+    
+    # Clear CUDA cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Reset peak memory stats
+        torch.cuda.reset_peak_memory_stats()
+        
+        # Log final memory state
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        reserved = torch.cuda.memory_reserved() / 1024**2
+        log.info(f"GPU cleanup complete. Memory: {allocated:.1f}MB allocated, {reserved:.1f}MB reserved")
+    
+    # Additional garbage collection pass
+    gc.collect()
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    log.warning(f"Received signal {signum}, cleaning up...")
+    cleanup_gpu()
+    sys.exit(1)
+
+
+# Register cleanup handlers
+atexit.register(cleanup_gpu)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 # ============================================================================
@@ -472,16 +537,27 @@ def save_results(results: Dict, output_dir: str):
 # ============================================================================
 
 def main():
+    global _model_ref, _tokenizer_ref
+    
     args = get_args()
     
-    # Load model
-    model, tokenizer = load_model(args)
-    
-    # Run benchmark
-    results = run_benchmark(model, tokenizer, args)
-    
-    # Save results
-    save_results(results, args.output_dir)
+    try:
+        # Load model
+        model, tokenizer = load_model(args)
+        
+        # Store global references for cleanup
+        _model_ref = model
+        _tokenizer_ref = tokenizer
+        
+        # Run benchmark
+        results = run_benchmark(model, tokenizer, args)
+        
+        # Save results
+        save_results(results, args.output_dir)
+        
+    finally:
+        # Explicit cleanup (also called by atexit, but good to be explicit)
+        cleanup_gpu()
 
 
 if __name__ == "__main__":
