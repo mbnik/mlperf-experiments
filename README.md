@@ -6,15 +6,13 @@ Simplified MLPerf Inference benchmark suite with easy setup and CLI.
 
 This project provides an easy-to-use interface for running MLPerf Inference benchmarks. It wraps the official MLPerf specifications with simplified commands, automatic data downloading, and consistent output formatting.
 
-**Supported Versions:**
-- **v5.1** - MLPerf Inference v5.1.1 (stable)
-- **v6.0** - MLPerf Inference v6.0.0pre (preview)
+**Current Version:** v5.1 (MLPerf Inference v5.1.1)
 
 ## Features
 
-- **Version Isolation** - Each MLPerf version has its own complete environment
-- **Simple CLI** - Unified command interface across all benchmarks
+- **Unified CLI** - Single `benchmark.py` script for all 10 benchmarks
 - **Auto-download** - Datasets and models download automatically when needed
+- **Synthetic Data** - Generate test data for quick validation
 - **Quantization** - 4-bit and 8-bit support for LLMs (reduced VRAM)
 - **GPU Offloading** - Run large models on limited GPU memory
 - **MLPerf Mode** - `--mlperf` flag for official-compliant settings
@@ -27,15 +25,18 @@ This project provides an easy-to-use interface for running MLPerf Inference benc
 conda create --name mlperf python=3.10 -y
 conda activate mlperf
 
-# Choose a version and run setup
+# Setup
 cd v5.1
 ./setup.sh --all
 
 # Check status
 ./setup.sh --status
 
+# List available datasets
+python scripts/benchmark.py --list
+
 # Run a benchmark
-./scripts/run_benchmark.sh bert --gpu --samples=100
+python scripts/benchmark.py -b bert --dataset squad -n 100 --mlperf
 ```
 
 ## Project Structure
@@ -46,17 +47,12 @@ mlperf-experiments/
 │   ├── setup.sh                  # Setup and clean script
 │   ├── README.md                 # v5.1 documentation
 │   ├── inference/                # MLCommons inference repo (cloned)
-│   ├── scripts/                  # Benchmark runner scripts
-│   ├── data/                     # Downloaded datasets
-│   ├── models/                   # Downloaded model weights
-│   └── results/                  # Benchmark results (JSON)
-│
-├── v6.0/                         # MLPerf Inference v6.0.0pre
-│   ├── setup.sh                  # Setup and clean script
-│   ├── README.md                 # v6.0 documentation
-│   ├── inference/                # MLCommons inference repo (cloned)
-│   ├── scripts/                  # Benchmark runner scripts
-│   ├── data/                     # Downloaded datasets
+│   ├── scripts/
+│   │   ├── benchmark.py          # Unified benchmark runner (all 10 benchmarks)
+│   │   ├── data_download.py      # Dataset downloader
+│   │   ├── data_gen.py           # Synthetic data generator
+│   │   └── data_prepare.py       # Data preparation utilities
+│   ├── data/                     # Downloaded/generated datasets
 │   ├── models/                   # Downloaded model weights
 │   └── results/                  # Benchmark results (JSON)
 │
@@ -65,45 +61,28 @@ mlperf-experiments/
 └── README.md                     # This file
 ```
 
-## Supported Benchmarks
+## Supported Benchmarks (10 total)
 
-### v5.1 Benchmarks (10 total)
-
-| Benchmark | Model               | Dataset       |
-|-----------|---------------------|---------------|
-| BERT      | bert-large-uncased  | SQuAD v1.1    |
-| ResNet50  | ResNet-50           | ImageNet      |
-| RetinaNet | RetinaNet           | OpenImages    |
-| 3D-UNet   | 3D-UNet             | KiTS19        |
-| DLRM-v2   | DLRM-v2             | Criteo        |
-| GPT-J     | GPT-J 6B            | CNN-DailyMail |
-| Llama     | Llama 2/3           | OpenOrca      |
-| Mixtral   | Mixtral-8x7B        | OpenOrca      |
-| SDXL      | Stable Diffusion XL | COCO-2014     |
-| Whisper   | Whisper Large       | LibriSpeech   |
-
-### v6.0 Benchmarks (8 total)
-
-| Benchmark | Model               | Dataset     |
-|-----------|---------------------|-------------|
-| BERT      | bert-large-uncased  | SQuAD v1.1  |
-| ResNet50  | ResNet-50           | ImageNet    |
-| 3D-UNet   | 3D-UNet             | KiTS19      |
-| DLRM-v3   | DLRM-v3             | Criteo      |
-| Llama     | Llama 2/3           | OpenOrca    |
-| Mixtral   | Mixtral-8x7B        | OpenOrca    |
-| SDXL      | Stable Diffusion XL | COCO-2014   |
-| Whisper   | Whisper Large       | LibriSpeech |
-
-**Note:** RetinaNet and GPT-J were removed in v6.0.
+| Benchmark | Model               | Task                 | Dataset       |
+|-----------|---------------------|----------------------|---------------|
+| BERT      | BERT-Large          | Question Answering   | SQuAD v1.1    |
+| ResNet50  | ResNet-50           | Image Classification | ImageNet      |
+| RetinaNet | RetinaNet           | Object Detection     | OpenImages    |
+| 3D-UNet   | 3D-UNet             | Medical Segmentation | KiTS19        |
+| DLRM-v2   | DLRM-v2             | Recommendation       | Criteo        |
+| GPT-J     | GPT-J 6B            | Text Summarization   | CNN-DailyMail |
+| Llama     | Llama 2/3           | Text Generation      | OpenOrca      |
+| Mixtral   | Mixtral-8x7B        | Text Generation      | GSM8K/OpenOrca|
+| SDXL      | Stable Diffusion XL | Image Generation     | COCO-2014     |
+| Whisper   | Whisper Large       | Speech Recognition   | LibriSpeech   |
 
 ## Setup Commands
 
-Each version folder has its own `setup.sh` with these options:
-
 ```bash
+cd v5.1
+
 # Setup options
-./setup.sh --clone         # Clone mlcommons/inference at correct tag
+./setup.sh --clone         # Clone mlcommons/inference at v5.1.1 tag
 ./setup.sh --loadgen       # Install LoadGen library
 ./setup.sh --deps          # Install Python dependencies
 ./setup.sh --all           # Do all of the above
@@ -121,33 +100,45 @@ Each version folder has its own `setup.sh` with these options:
 ## Usage Examples
 
 ```bash
+cd v5.1/scripts
+
+# List available datasets
+python benchmark.py --list
+
 # Quick test with synthetic data
-./scripts/run_benchmark.sh bert --gpu --samples=5
+python benchmark.py -b bert --dataset synthetic -n 50 --mlperf-quick
 
 # Full benchmark with real data
-./scripts/run_benchmark.sh resnet50 --gpu --data=real --samples=1000
+python benchmark.py -b bert --dataset squad -n 1000 --mlperf
 
-# Official MLPerf mode
-./scripts/run_benchmark.sh bert --mlperf
+# Whisper benchmark
+python benchmark.py -b whisper --dataset librispeech -n 50 --mlperf --target-qps 2
 
-# LLM with quantization
-./scripts/run_benchmark.sh mixtral --gpu --4bit --offload
+# LLM with quantization and offloading
+python benchmark.py -b llama --dataset openorca -n 10 --4bit --offload
+python benchmark.py -b mixtral --dataset mixtral-15k --mlperf-quick --offload
 
-# Llama with specific model size
-./scripts/run_benchmark.sh llama llama3-8b --gpu --4bit
+# Generate synthetic data
+python data_gen.py bert --num-samples 500
+python data_gen.py mixtral --num-samples 20
+
+# Download real datasets
+python data_download.py bert
+python data_download.py whisper
 ```
 
 ## Common Options
 
-| Option             | Description                            |
-|--------------------|----------------------------------------|
-| `--gpu`            | Run on GPU (default)                   |
-| `--cpu`            | Run on CPU only                        |
-| `--samples=N`      | Number of samples to process           |
-| `--data=synthetic` | Use synthetic data (fast, no download) |
-| `--data=real`      | Use real dataset (downloads if needed) |
-| `--mlperf`         | Use official MLPerf settings           |
-| `-h, --help`       | Show help message                      |
+| Option              | Description                           |
+|---------------------|---------------------------------------|
+| `-b, --benchmark`   | Benchmark name (required)             |
+| `--dataset`         | Dataset name (use --list to see all)  |
+| `-n, --max-samples` | Number of samples to process          |
+| `--mlperf`          | Full MLPerf mode (10min duration)     |
+| `--mlperf-quick`    | Quick test mode (60s duration)        |
+| `--target-qps`      | Target queries per second             |
+| `--device`          | Device: cuda, cpu (default: cuda)     |
+| `--list`            | List available datasets               |
 
 ### LLM Options (Llama, Mixtral, GPT-J)
 
@@ -156,6 +147,15 @@ Each version folder has its own `setup.sh` with these options:
 | `--offload` | GPU + CPU memory offloading | Varies         |
 | `--4bit`    | 4-bit quantization          | ~4x            |
 | `--8bit`    | 8-bit quantization          | ~2x            |
+
+### VRAM Requirements
+
+| Model      | FP16    | 8-bit   | 4-bit   | 4-bit+offload |
+|------------|---------|---------|---------|---------------|
+| GPT-J 6B   | ~12GB   | ~6GB    | ~4GB    | ~2GB          |
+| Llama 70B  | ~140GB  | ~70GB   | ~35GB   | ~8GB          |
+| Mixtral    | ~90GB   | ~48GB   | ~24GB   | ~8GB          |
+| SDXL       | ~7GB    | -       | -       | ~4GB          |
 
 ## Requirements
 
@@ -183,7 +183,7 @@ huggingface-cli login
 
 ## Output
 
-Results are saved to `<version>/results/<benchmark>/` as JSON:
+Results are saved to `v5.1/results/<benchmark>/` as JSON:
 
 ```json
 {
@@ -191,8 +191,8 @@ Results are saved to `<version>/results/<benchmark>/` as JSON:
   "device": "cuda",
   "throughput_samples_per_sec": 172.95,
   "avg_latency_ms": 5.78,
-  "mlperf_mode": false,
-  "mlperf_compliant": false
+  "mlperf_mode": true,
+  "mlperf_compliant": true
 }
 ```
 
