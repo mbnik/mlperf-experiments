@@ -62,49 +62,92 @@ conda activate mlperf
 
 ## Quick Start
 
+All benchmarks are run through the unified `benchmark.py` script:
+
 ```bash
-# Run any benchmark
-./scripts/run_benchmark.sh <benchmark> [options]
+cd scripts/
+
+# List available datasets
+python benchmark.py --list
+
+# Run benchmarks
+python benchmark.py -b <benchmark> --dataset <dataset> [options]
 
 # Examples
-./scripts/run_benchmark.sh bert --gpu --samples=100
-./scripts/run_benchmark.sh llama --gpu --4bit --offload
-./scripts/run_benchmark.sh mixtral --4bit --offload --mlperf
+python benchmark.py -b bert --dataset squad -n 100 --mlperf
+python benchmark.py -b whisper --dataset librispeech -n 50 --mlperf --target-qps 2
+python benchmark.py -b llama --dataset openorca -n 10 --4bit --offload
+python benchmark.py -b mixtral --dataset mixtral-15k --mlperf-quick --offload
 
-# MLPerf compliant mode
-./scripts/run_benchmark.sh bert --mlperf
+# Quick test mode (60s duration, reduced samples)
+python benchmark.py -b bert --dataset synthetic --mlperf-quick
+
+# Full MLPerf mode (10min duration)
+python benchmark.py -b bert --dataset squad --mlperf
+```
+
+## Data Management
+
+```bash
+cd scripts/
+
+# Download real MLPerf datasets
+python data_download.py <benchmark>
+python data_download.py bert           # SQuAD v1.1
+python data_download.py whisper        # LibriSpeech
+python data_download.py dlrm           # Criteo (~100GB)
+
+# Generate synthetic data for testing
+python data_gen.py <benchmark> --num-samples 100
+python data_gen.py bert --num-samples 500
+python data_gen.py mixtral --num-samples 20
 ```
 
 ## Folder Structure
 
 ```
 v5.1/
-├── inference/     # MLCommons inference repo (v5.1.1 tag)
-├── scripts/       # Benchmark runner scripts
-├── data/          # Downloaded datasets
-├── models/        # Downloaded models
-├── results/       # Benchmark results
+├── inference/           # MLCommons inference repo (v5.1.1 tag)
+├── scripts/
+│   ├── benchmark.py     # Unified benchmark runner (all 10 benchmarks)
+│   ├── data_download.py # Dataset downloader
+│   ├── data_gen.py      # Synthetic data generator
+│   └── data_prepare.py  # Data preparation utilities
+├── data/                # Downloaded/generated datasets
+├── models/              # Downloaded models
+├── results/             # Benchmark results (JSON)
 └── README.md
 ```
 
 ## Common Options
 
-| Option             | Description                  |
-|--------------------|------------------------------|
-| `--gpu`            | Run on GPU (default)         |
-| `--cpu`            | Run on CPU only              |
-| `--offload`        | GPU + CPU memory offloading  |
-| `--samples=N`      | Number of samples to process |
-| `--mlperf`         | Use official MLPerf settings |
-| `--data=synthetic` | Use synthetic data (fast)    |
-| `--data=real`      | Use real dataset             |
+| Option              | Description                           |
+|---------------------|---------------------------------------|
+| `-b, --benchmark`   | Benchmark name (required)             |
+| `--dataset`         | Dataset name (use --list to see all)  |
+| `-n, --max-samples` | Number of samples to process          |
+| `--mlperf`          | Full MLPerf mode (10min duration)     |
+| `--mlperf-quick`    | Quick test mode (60s duration)        |
+| `--target-qps`      | Target queries per second             |
+| `--device`          | Device: cuda, cpu (default: cuda)     |
+| `--list`            | List available datasets               |
 
-## LLM Options (GPT-J, Llama, Mixtral)
+## Memory Options (for large models)
 
-| Option   | Description        | VRAM Reduction |
-|----------|--------------------|----------------|
-| `--4bit` | 4-bit quantization | ~4x            |
-| `--8bit` | 8-bit quantization | ~2x            |
+| Option     | Description                | Use Case                    |
+|------------|----------------------------|-----------------------------|
+| `--4bit`   | 4-bit quantization         | ~4x VRAM reduction          |
+| `--8bit`   | 8-bit quantization         | ~2x VRAM reduction          |
+| `--offload`| CPU memory offloading      | When GPU VRAM insufficient  |
+
+### VRAM Requirements
+
+| Model      | FP16    | 8-bit   | 4-bit   | 4-bit+offload |
+|------------|---------|---------|---------|---------------|
+| GPT-J 6B   | ~12GB   | ~6GB    | ~4GB    | ~2GB          |
+| Llama 70B  | ~140GB  | ~70GB   | ~35GB   | ~8GB          |
+| Mixtral    | ~90GB   | ~48GB   | ~24GB   | ~8GB          |
+| SDXL       | ~7GB    | -       | -       | ~4GB          |
 
 ## MLPerf v5.1 Reference
 
@@ -115,7 +158,8 @@ v5.1/
 ## Notes
 
 - **RetinaNet** and **GPT-J** are included in v5.1 but were removed in v6.0
-- **Mixtral-8x7B** is a large MoE model - use `--4bit --offload` for consumer GPUs
+- **Mixtral-8x7B** is a large MoE model - use `--offload` for consumer GPUs (very slow)
+- **Mixtral quick mode** uses 1 sample, 4 warmup tokens for faster testing
 - Results saved to `results/<benchmark>/` as JSON files
 
 ## Author
