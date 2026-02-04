@@ -50,3 +50,7 @@ results/
 
 # Work in progress scripts
 run_all_benchmarks.sh
+
+# Personal notes
+v5.1/COMPLIANCE_ROADMAP.md
+v5.1/REMAINING_BENCHMARKS.md
